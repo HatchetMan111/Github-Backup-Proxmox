@@ -1,0 +1,16 @@
+[Unit]
+Description=GitHub-Backup-Manager Web-UI (Port 4242)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/github-backup
+Environment=GITHUB_BACKUP_PORT=4242
+ExecStart=/usr/bin/python3 /opt/github-backup/server.py serve
+Restart=always
+RestartSec=5
+# Daten + Token liegen unter /opt/github-backup (config.json ist 0600)
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitHub-Backup-Manager</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2333; --border: #2d333b;
+    --text: #e6edf3; --muted: #8b949e; --accent: #3fb950; --accent2: #58a6ff;
+    --warn: #d29922; --err: #f85149; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+  header h1 { font-size: 22px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .badge { font-size: 12px; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--border); color: var(--muted); }
+  .badge.on { color: var(--accent); border-color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 18px 20px; margin-bottom: 18px; }
+  .card h2 { margin: 0 0 12px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+  input[type=text], input[type=password], select {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 14px; outline: none; }
+  input:focus, select:focus { border-color: var(--accent2); }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  .row > div { flex: 1 1 220px; }
+  button { background: var(--accent2); color: #0b1116; border: 0; border-radius: 8px;
+           padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--accent2); border: 1px solid var(--accent2); }
+  button.green { background: var(--accent); }
+  button.red { background: transparent; color: var(--err); border: 1px solid var(--err); }
+  button.small { padding: 4px 10px; font-size: 12px; font-weight: 500; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .presets { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
+  .preset { flex: 1 1 200px; border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 10px 12px; cursor: pointer; background: var(--bg); }
+  .preset.sel { border-color: var(--accent); background: rgba(63,185,80,.08); }
+  .preset b { display: block; }
+  .preset span { font-size: 12px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+  .pill { font-size: 11px; padding: 1px 8px; border-radius: 12px; border: 1px solid var(--border); color: var(--muted); }
+  .pill.ok { color: var(--accent); border-color: var(--accent); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.err { color: var(--err); border-color: var(--err); }
+  .progress { height: 10px; background: var(--bg); border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  pre.log { background: #0a0d12; border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+            max-height: 320px; overflow: auto; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
+  .msg.ok { color: var(--accent); } .msg.err { color: var(--err); }
+  .hint { background: var(--panel2); border: 1px dashed var(--border); border-radius: 8px;
+          padding: 8px 12px; font-size: 12px; color: var(--muted); margin-top: 12px; }
+  .scrollbox { max-height: 420px; overflow: auto; }
+  code { background: var(--panel2); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>📦 GitHub-Backup-Manager</h1>
+    <span id="ver" class="badge"></span>
+    <span id="jobbadge" class="badge">kein Backup aktiv</span>
+    <span class="sub" style="margin-left:auto">Daten: <span id="datadir"></span></span>
+  </header>
+
+  <!-- ══ 1. Konfiguration ══ -->
+  <section class="card">
+    <h2>⚙️ Konfiguration</h2>
+    <div id="accounts"></div>
+    <button class="ghost small" onclick="addAccount()">+ Konto hinzufügen</button>
+
+    <div style="margin-top:16px">
+      <label>Backup-Modus (Preset)</label>
+      <div class="presets" id="presets">
+        <div class="preset" data-p="code"><b>① Code</b><span>Mirror aller Branches &amp; Tags – 1:1-Kopie des Repos</span></div>
+        <div class="preset" data-p="wiki"><b>② Code + Wiki</b><span>zusätzlich der Wiki-Mirror (.wiki.git)</span></div>
+        <div class="preset" data-p="full"><b>③ Komplett</b><span>zusätzlich Issues &amp; Releases als JSON-Export</span></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 1 180px">
+        <label>Tägliches Backup um</label>
+        <select id="timer_hour"></select>
+      </div>
+      <div style="flex:0 0 auto">
+        <button class="green" onclick="saveConfig()">💾 Speichern</button>
+      </div>
+    </div>
+    <div id="cfgmsg" class="msg"></div>
+    <div class="hint">🔑 Ein PAT (classic, Scope <code>repo</code>) schaltet private Repos frei und
+      erhöht das API-Limit auf 5000/h. Er wird nur lokal in <code>config.json</code> gespeichert
+      (0600) – nie ins Log oder Repo geschrieben. Ohne PAT: nur öffentliche Repos, 60 Anfragen/h.</div>
+  </section>
+
+  <!-- ══ 2. Scan & Auswahl ══ -->
+  <section class="card">
+    <h2>🔍 Repos scannen &amp; sichern</h2>
+    <div class="row">
+      <div style="flex:0 1 260px">
+        <label>Konto</label>
+        <select id="scan_account"></select>
+      </div>
+      <div style="flex:0 0 auto">
+        <button onclick="scan()">Repos scannen</button>
+      </div>
+    </div>
+    <div id="scanmsg" class="msg"></div>
+    <div id="scantable" class="scrollbox" style="margin-top:8px"></div>
+    <div id="scanfooter" style="margin-top:12px; display:none">
+      <button class="green" id="startbtn" onclick="startBackup()">▶ Ausgewählte sichern (<span id="selcount">0</span>)</button>
+      <button class="ghost small" onclick="toggleAll(true)">Alle wählen</button>
+      <button class="ghost small" onclick="toggleAll(false)">Keine</button>
+      <span class="muted" style="margin-left:10px">Häkchen-Spalte „Backup“ = dauerhafte Ausschlussliste (gilt auch für den täglichen Timer).</span>
+    </div>
+  </section>
+
+  <!-- ══ 3. Backup-Job ══ -->
+  <section class="card">
+    <h2>🚚 Backup-Job
+      <span style="margin-left:auto"><button id="stopbtn" class="red small" onclick="stopBackup()" disabled>■ Stop</button></span>
+    </h2>
+    <div class="progress"><div id="bar"></div></div>
+    <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:8px" class="muted">
+      <span id="jcurrent"></span>
+      <span id="jcount"></span>
+      <span id="jresults"></span>
+      <span id="jstarted"></span>
+    </div>
+    <pre class="log" id="log">Noch kein Backup gelaufen. Erst oben Konten einrichten, scannen und starten.</pre>
+  </section>
+
+  <!-- ══ 4. Gesicherte Repos ══ -->
+  <section class="card">
+    <h2>🗄️ Gesicherte Repos <span id="repocount" class="muted"></span></h2>
+    <div class="scrollbox">
+      <table id="repostable"><thead><tr>
+        <th>Repo</th><th>Status</th><th>Branches</th><th>Tags</th><th>Größe</th>
+        <th>Letzter Commit</th><th>Backup vom</th><th>Extras</th><th></th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+    <div class="hint">Restore aus einem Mirror: <code>git clone /pfad/zu/repos/&lt;owner&gt;/&lt;repo&gt;.git</code>
+      – enthält alle Branches &amp; Tags. Snapshot-Bundles: <code>git clone &lt;datei&gt;.bundle</code></div>
+  </section>
+
+  <!-- ══ 5. Snapshots ══ -->
+  <section class="card">
+    <h2>🧊 Snapshots <span id="snapcount" class="muted"></span></h2>
+    <div class="scrollbox">
+      <table id="snaptable"><thead><tr>
+        <th>Repo</th><th>Datei</th><th>Größe</th><th>Erstellt</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let SCAN = null;              // Ergebnis des letzten Scans
+let cfgDirty = false;         // Konfig-Formular wird gerade editiert
+let lastLogLen = -1;
+
+for (let h = 0; h < 24; h++) {
+  const o = document.createElement("option");
+  o.value = h; o.textContent = String(h).padStart(2, "0") + ":00 Uhr";
+  $("timer_hour").appendChild(o);
+}
+$("timer_hour").addEventListener("change", () => cfgDirty = true);
+
+/* ── Konfiguration ── */
+function accountRow(acc, i) {
+  const d = document.createElement("div");
+  d.className = "row";
+  d.style.marginBottom = "8px";
+  d.innerHTML = `
+    <div style="flex:1 1 180px"><label>Konto-Name</label>
+      <input type="text" value="${esc(acc.name)}" data-i="${i}" data-f="name" oninput="cfgDirty=true"></div>
+    <div style="flex:1 1 220px"><label>PAT (optional – •••• = gespeichert)</label>
+      <input type="password" value="${esc(acc.token)}" placeholder="ghp_..." data-i="${i}" data-f="token" oninput="cfgDirty=true" autocomplete="off"></div>
+    <div style="flex:0 0 auto; padding-bottom:6px">
+      <label style="display:flex; gap:6px; align-items:center; cursor:pointer">
+        <input type="checkbox" ${acc.include_forks ? "checked" : ""} data-i="${i}" data-f="include_forks" onchange="cfgDirty=true" style="width:auto"> Forks mit sichern</label></div>
+    <div style="flex:0 0 auto"><button class="red small" onclick="delAccount(${i})">✕</button></div>`;
+  return d;
+}
+
+function renderAccounts(accounts) {
+  const box = $("accounts");
+  box.innerHTML = "";
+  accounts.forEach((a, i) => box.appendChild(accountRow(a, i)));
+  const sel = $("scan_account");
+  sel.innerHTML = "";
+  accounts.forEach((a, i) => {
+    const o = document.createElement("option");
+    o.value = i; o.textContent = a.name || "(Konto " + (i + 1) + ")";
+    sel.appendChild(o);
+  });
+}
+
+function addAccount() {
+  const cfg = readConfigFromForm();
+  cfg.accounts.push({ name: "", token: "", include_forks: false });
+  renderAccounts(cfg.accounts);
+  cfgDirty = true;
+}
+function delAccount(i) {
+  const cfg = readConfigFromForm();
+  cfg.accounts.splice(i, 1);
+  renderAccounts(cfg.accounts);
+  cfgDirty = true;
+}
+
+function readConfigFromForm() {
+  const accounts = [];
+  document.querySelectorAll("#accounts input[data-f=name]").forEach(inp => {
+    const i = +inp.dataset.i;
+    accounts[i] = { name: inp.value, token: "", include_forks: false };
+  });
+  document.querySelectorAll("#accounts input[data-f=token]").forEach(inp => {
+    accounts[+inp.dataset.i].token = inp.value;
+  });
+  document.querySelectorAll("#accounts input[data-f=include_forks]").forEach(inp => {
+    accounts[+inp.dataset.i].include_forks = inp.checked;
+  });
+  return {
+    accounts: accounts.filter(a => a && a.name.trim()),
+    preset: document.querySelector(".preset.sel")?.dataset.p || "code",
+    timer_hour: +$("timer_hour").value,
+  };
+}
+
+async function saveConfig() {
+  const cfg = readConfigFromForm();
+  const r = await api("/api/config", cfg);
+  show($("cfgmsg"), r.ok, r.message || r.error || "");
+  cfgDirty = false;
+  loadState();  // frisch laden (maskierte Tokens etc.)
+}
+
+function applyStateToConfig(cfg) {
+  if (cfgDirty) return;             // nichts überschreiben, während editiert wird
+  renderAccounts(cfg.accounts);
+  document.querySelectorAll(".preset").forEach(el =>
+    el.classList.toggle("sel", el.dataset.p === cfg.preset));
+  $("timer_hour").value = cfg.timer_hour;
+}
+document.querySelectorAll(".preset").forEach(el =>
+  el.addEventListener("click", () => {
+    document.querySelectorAll(".preset").forEach(e => e.classList.remove("sel"));
+    el.classList.add("sel"); cfgDirty = true;
+  }));
+
+/* ── Scan & Start ── */
+async function scan() {
+  const idx = +$("scan_account").value;
+  show($("scanmsg"), true, "Scanne Konto …");
+  const r = await api("/api/scan", { account: idx });
+  if (!r.ok) { show($("scanmsg"), false, r.error); return; }
+  SCAN = r.repos;
+  show($("scanmsg"), true, `Konto „${r.scanned}“: ${r.total} Repos gefunden.`);
+  renderScan();
+  $("scanfooter").style.display = "block";
+}
+
+function renderScan() {
+  if (!SCAN) return;
+  const rows = SCAN.map((r, i) => `
+    <tr>
+      <td><input type="checkbox" class="pick" data-i="${i}" ${r.excluded ? "" : "checked"}
+           onchange="updateSel()" style="width:auto"></td>
+      <td><input type="checkbox" class="excl" data-i="${i}" ${r.excluded ? "checked" : ""}
+           onchange="setExcluded(${i}, this.checked)" style="width:auto"></td>
+      <td>${esc(r.full_name)}
+        ${r.private ? '<span class="pill">privat</span>' : ""}
+        ${r.fork ? '<span class="pill">fork</span>' : ""}
+        ${r.archived ? '<span class="pill warn">archiviert</span>' : ""}</td>
+      <td>${fmtKB(r.size_kb)}</td>
+      <td>${fmtDate(r.updated_at)}</td>
+    </tr>`).join("");
+  $("scantable").innerHTML = `<table><thead><tr>
+      <th style="width:34px" title="Jetzt sichern">▸</th>
+      <th style="width:44px" title="Dauerhaft ausschließen">🚫</th>
+      <th>Repo</th><th>Größe</th><th>Aktualisiert</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  updateSel();
+}
+
+function pickedRepos() {
+  return [...document.querySelectorAll("input.pick")].filter(c => c.checked)
+    .map(c => SCAN[+c.dataset.i].full_name);
+}
+function updateSel() { $("selcount").textContent = pickedRepos().length; }
+function toggleAll(on) {
+  document.querySelectorAll("input.pick").forEach(c => c.checked = on);
+  updateSel();
+}
+async function setExcluded(i, val) {
+  const repo = SCAN[i].full_name;
+  SCAN[i].excluded = val;
+  const c = document.querySelector(`input.pick[data-i="${i}"]`);
+  if (c) { c.checked = !val; }
+  updateSel();
+  await api("/api/excluded", { repo, excluded: val });
+}
+
+async function startBackup() {
+  const repos = pickedRepos();
+  if (!repos.length) { show($("scanmsg"), false, "Keine Repos ausgewählt."); return; }
+  const preset = document.querySelector(".preset.sel")?.dataset.p || "code";
+  const r = await api("/api/backup/start", { repos, preset });
+  show($("scanmsg"), r.ok, r.message || r.error);
+}
+async function stopBackup() {
+  const r = await api("/api/backup/stop", {});
+  show($("scanmsg"), r.ok, r.message || r.error);
+}
+
+/* ── Snapshots ── */
+async function snapshot(repo) {
+  if (!confirm(`Snapshot von ${repo} erstellen?`)) return;
+  const r = await api("/api/snapshot", { repo });
+  show($("cfgmsg"), r.ok, r.ok ? "Snapshot erstellt: " + r.snapshot.file : r.error);
+  loadState();
+}
+
+/* ── Polling ── */
+async function loadState() {
+  let s;
+  try { s = await (await fetch("/api/state")).json(); }
+  catch { $("jobbadge").textContent = "Server nicht erreichbar"; return; }
+
+  $("ver").textContent = "v" + s.version;
+  $("datadir").textContent = s.data_dir;
+  applyStateToConfig(s.config);
+
+  const j = s.job;
+  $("jobbadge").className = "badge" + (j.running ? " on" : "");
+  $("jobbadge").textContent = j.running
+    ? `Backup läuft (${j.done}/${j.total})` : "kein Backup aktiv";
+  $("stopbtn").disabled = !j.running;
+  $("bar").style.width = j.total ? Math.round(100 * j.done / j.total) + "%" : "0";
+  $("jcurrent").textContent = j.current ? "▶ " + j.current + (j.stop_requested ? " (Stop angefordert)" : "") : "";
+  $("jcount").textContent = j.total ? `${j.done}/${j.total} Repos` : "";
+  $("jresults").textContent = j.total ? `✔ ${j.results.ok} · ⚠ ${j.results.warn} · ✘ ${j.results.fail}` : "";
+  $("jstarted").textContent = j.started_at ? "Start: " + fmtDate(j.started_at) : "";
+  if (s.log.length) { $("log").textContent = s.log.join("\n"); $("log").scrollTop = $("log").scrollHeight; }
+
+  // Gesicherte Repos
+  const repos = Object.entries(s.state.repos || {}).sort((a, b) => a[0].localeCompare(b[0]));
+  $("repocount").textContent = repos.length ? `(${repos.length})` : "";
+  $("repostable").querySelector("tbody").innerHTML = repos.map(([name, m]) => {
+    const extras = [m.wiki && "Wiki", m.issues != null && `Issues: ${m.issues}`,
+                    m.releases != null && `Releases: ${m.releases}`].filter(Boolean).join(" · ");
+    return `<tr>
+      <td>${esc(name)}</td>
+      <td><span class="pill ${m.status === "ok" ? "ok" : m.status === "warn" ? "warn" : "err"}"
+           title="${esc(m.note || "")}">${m.status === "ok" ? "ok" : m.status === "warn" ? "Hinweis" : "Fehler"}</span></td>
+      <td>${m.branches ?? "–"}</td><td>${m.tags ?? "–"}</td>
+      <td>${m.size_kb ? fmtKB(m.size_kb) : "–"}</td>
+      <td>${m.last_commit || "–"}</td>
+      <td>${fmtDate(m.last_backup)}</td>
+      <td class="muted">${extras || "–"}</td>
+      <td><button class="ghost small" onclick="snapshot('${esc(name)}')">🧊 Snapshot</button></td>
+    </tr>`;
+  }).join("");
+
+  // Snapshots
+  const snaps = (s.state.snapshots || []).slice().reverse();
+  $("snapcount").textContent = snaps.length ? `(${snaps.length})` : "";
+  $("snaptable").querySelector("tbody").innerHTML = snaps.map(sn => `<tr>
+      <td>${esc(sn.repo)}</td><td><code>${esc(sn.file)}</code></td>
+      <td>${fmtKB(sn.size_kb)}</td><td>${fmtDate(sn.created)}</td></tr>`).join("");
+}
+
+/* ── Helfer ── */
+async function api(url, body) {
+  try {
+    const r = await fetch(url, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}) });
+    return await r.json();
+  } catch (e) { return { ok: false, error: String(e) }; }
+}
+function show(el, ok, text) { el.className = "msg " + (ok ? "ok" : "err"); el.textContent = text; }
+function esc(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function fmtKB(kb) {
+  if (kb == null) return "–";
+  if (kb < 1024) return kb + " KB";
+  if (kb < 1024 * 1024) return (kb / 1024).toFixed(1) + " MB";
+  return (kb / 1024 / 1024).toFixed(2) + " GB";
+}
+function fmtDate(iso) { return iso ? iso.replace("T", " ").slice(0, 16) : "–"; }
+
+loadState();
+setInterval(loadState, 2000);
+</script>
+</body>
+</html>

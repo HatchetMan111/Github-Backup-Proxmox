@@ -1,0 +1,10 @@
+[Unit]
+Description=Tägliches GitHub-Backup (alle Konten)
+
+[Timer]
+# Uhrzeit ist in der Web-UI einstellbar (config.json → ghbackup.timer)
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
