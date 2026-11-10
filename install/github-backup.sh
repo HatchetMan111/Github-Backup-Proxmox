@@ -185,8 +185,11 @@ verify_ct_dns() {
     fi
     warn "DNS im Container defekt – schreibe Fallback-Nameserver ($ns_list) nach /etc/resolv.conf"
     pct exec "$id" -- sh -c "printf 'nameserver %s\n' $ns_list > /etc/resolv.conf"
+    # DHCP-Lease-Renewals überschreiben resolv.conf gern wieder (Live-Fall 2026-11-10:
+    # nach Installation OK, Stunden später wieder tot) → Datei gegen Änderungen einfrieren.
+    pct exec "$id" -- chattr +i /etc/resolv.conf 2>/dev/null || true
     if pct exec "$id" -- getent hosts api.github.com >/dev/null 2>&1; then
-        ok "DNS-Fallback aktiv – Auflösung funktioniert"
+        ok "DNS-Fallback aktiv und eingefroren (chattr +i) – Auflösung funktioniert"
         return 0
     fi
     die "DNS im Container weiterhin ohne Funktion (auch mit Fallback).\n  Prüfe: pct exec $id -- cat /etc/resolv.conf && pct exec $id -- ping -c2 1.1.1.1\n  Firewall/Router: ausgehende DNS-Anfragen (Port 53) am Bridge-Netz erlauben."
