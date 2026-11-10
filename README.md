@@ -69,6 +69,52 @@ git clone /pfad/im/container/snapshots/<owner>/<repo>-<datum>.bundle
 
 Außerhalb des Containers: `pct pull <ctid> /opt/github-backup/repos/... ./` oder einen Mountpoint für `/opt/github-backup` setzen (`pct set <ctid> -mp0 <storage>:0,mp=/opt/github-backup`) – **vor** der Installation angelegen, dann überlebt der Backup-Bestand sogar Container-Recreates.
 
+## ❓ FAQ – wo finde ich was und wie richte ich es ein?
+
+*(Diese FAQ gibt es auch direkt in der Web-UI: Button **❓ Hilfe** oben rechts, bzw. der „was ist das / woher?“-Link neben dem PAT-Feld.)*
+
+### 🔑 PAT: Was ist das, wo bekomme ich es, wie richte ich es ein?
+
+**PAT** = „Personal Access Token“ – ein Passwort-Ersatz für die GitHub-API.
+- **Ohne PAT:** nur öffentliche Repos, max. 60 Anfragen/Stunde
+- **Mit PAT:** auch private Repos + 5.000 Anfragen/Stunde
+
+**Schritt für Schritt (Classic-Token, empfohlen):**
+
+1. Auf [github.com](https://github.com) einloggen → oben rechts Profilbild → **Settings**
+2. Ganz unten links: **Developer settings**
+3. **Personal access tokens** → **Tokens (classic)** → **Generate new token (classic)**
+4. Notiz z. B. „GitHub-Backup“, Ablaufdatum wählen
+5. Haken bei **repo** (alle Unterpunkte) – das reicht
+6. „Generate token“ → den angezeigten Token (`ghp_…`) **sofort kopieren** – er wird nur einmal angezeigt!
+7. In der Web-UI ins **PAT-Feld** einfügen → **💾 Speichern**
+
+Der Token bleibt ausschließlich lokal im Container (`/opt/github-backup/config.json`, Rechte 0600), wird nie geloggt und nie an Dritte gesendet. Widerrufen jederzeit unter [github.com/settings/tokens](https://github.com/settings/tokens).
+
+*Alternative „Fine-grained tokens“:* Repository access → *All repositories*; Permissions → *Contents: Read-only* + *Metadata: Read-only* (für Preset ③ zusätzlich *Issues: Read-only*).
+
+### 👤 Konto einrichten
+
+**Konto-Name** = GitHub-Benutzername. Ohne PAT: es werden die öffentlichen Repos dieses Namens gesichert. Mit PAT: automatisch die Repos des Token-Inhabers (inkl. privater). Mehrere Konten einfach per „+ Konto hinzufügen“.
+
+### 💾 Wo landen die Backups und wie restore ich?
+
+Im Container unter `/opt/github-backup/repos/<owner>/<repo>.git` (Mirror, alle Branches & Tags):
+
+```bash
+git clone /opt/github-backup/repos/<owner>/<repo>.git    # im Container
+git clone /pfad/zu/<repo>-<datum>.bundle                 # aus einem Snapshot
+pct pull <CT-ID> /opt/github-backup/repos/... ./         # auf den Proxmox-Host holen
+```
+
+### 🚫 Repos dauerhaft überspringen
+
+Beim Scan die **🚫-Spalte** anhaken → dauerhafte Ausschlussliste, gilt auch für den täglichen Timer.
+
+### ⏰ Täglicher Auto-Backup
+
+`ghbackup.timer` sichert täglich um die in der UI eingestellte Stunde alle Konten (außer Ausschlussliste). `Persistent=true` holt verpasste Läufe nach Reboot nach. Timer-Status: `pct exec <CT-ID> -- systemctl list-timers ghbackup*`
+
 ## 🧰 Fehlersuche
 
 - Installer bricht ab → er gibt die **komplette Fehlerkette** aus (Zeile, Befehl, Exit-Code, Container-Logs) und speichert alles in `/tmp/github-backup-installer-*.log`

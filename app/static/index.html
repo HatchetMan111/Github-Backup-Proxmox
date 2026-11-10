@@ -61,6 +61,21 @@
           padding: 8px 12px; font-size: 12px; color: var(--muted); margin-top: 12px; }
   .scrollbox { max-height: 420px; overflow: auto; }
   code { background: var(--panel2); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
+  /* Hilfe-Modal */
+  #helpmodal { position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 50;
+               display: none; align-items: flex-start; justify-content: center;
+               overflow: auto; padding: 40px 16px; }
+  .helpbox { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+             max-width: 780px; width: 100%; padding: 18px 24px 24px; }
+  .helpbox h2 { margin: 0 0 6px; }
+  .helpbox details { border-bottom: 1px solid var(--border); padding: 8px 0; }
+  .helpbox details:last-of-type { border-bottom: 0; }
+  .helpbox summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+  .helpbox .faqbody { font-size: 14px; color: var(--text); padding-top: 6px; }
+  .helpbox .faqbody ol, .helpbox .faqbody ul { margin: 6px 0 6px 20px; }
+  .helpbox .faqbody li { margin: 3px 0; }
+  .faqlink { color: var(--accent2); cursor: pointer; text-decoration: underline;
+             font-size: 12px; margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -70,6 +85,7 @@
     <h1>📦 GitHub-Backup-Manager</h1>
     <span id="ver" class="badge"></span>
     <span id="jobbadge" class="badge">kein Backup aktiv</span>
+    <button class="ghost small" onclick="openHelp()">❓ Hilfe</button>
     <span class="sub" style="margin-left:auto">Daten: <span id="datadir"></span></span>
   </header>
 
@@ -164,6 +180,111 @@
   </section>
 
 </div>
+
+<!-- ══ Hilfe-Modal ══ -->
+<div id="helpmodal" onclick="if(event.target===this)closeHelp()">
+  <div class="helpbox">
+    <h2>❓ Hilfe &amp; FAQ <button class="ghost small" style="float:right" onclick="closeHelp()">✕ Schließen</button></h2>
+    <p class="muted">Alle Antworten gelten für die lokale Installation im Container (<span id="helpdatadir"></span>).</p>
+
+    <details id="faq-pat" open>
+      <summary>🔑 PAT: Was ist das, wo finde ich es, wie richte ich es ein?</summary>
+      <div class="faqbody">
+        <p><b>PAT</b> = „Personal Access Token“ – ein Passwort-Ersatz für die GitHub-API.
+        <b>Ohne PAT:</b> nur öffentliche Repos, max. 60 Anfragen/Stunde.
+        <b>Mit PAT:</b> auch <i>private</i> Repos und 5.000 Anfragen/Stunde.</p>
+        <p><b>Schritt für Schritt (Classic-Token, empfohlen):</b></p>
+        <ol>
+          <li>Auf <a href="https://github.com" target="_blank" rel="noopener">github.com</a> einloggen → oben rechts auf dein Profilbild → <b>Settings</b></li>
+          <li>Ganz unten links: <b>Developer settings</b></li>
+          <li><b>Personal access tokens</b> → <b>Tokens (classic)</b> → <b>Generate new token (classic)</b></li>
+          <li>Notiz z.&nbsp;B. „GitHub-Backup“, Ablaufdatum wählen</li>
+          <li>Haken bei <b>repo</b> (alle Unterpunkte) – das reicht</li>
+          <li>„Generate token“ → den angezeigten Token (<code>ghp_…</code>) <b>sofort kopieren</b> (er wird nur einmal angezeigt!)</li>
+          <li>Hier in dieser UI ins <b>PAT-Feld</b> einfügen → <b>💾 Speichern</b></li>
+        </ol>
+        <p>Der Token wird <b>nur lokal im Container</b> gespeichert (<code>config.json</code>, Rechte 0600) – nie ins Log geschrieben, nie an Dritte gesendet. Löschen/Widerrufen jederzeit unter <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a>.</p>
+        <p class="muted">Alternative „Fine-grained tokens“ funktionieren auch: Repository access → <i>All repositories</i>; Permissions → <i>Contents: Read-only</i> + <i>Metadata: Read-only</i> (für Preset ③ zusätzlich <i>Issues: Read-only</i>).</p>
+      </div>
+    </details>
+
+    <details id="faq-konto">
+      <summary>👤 Wie richte ich ein Konto ein?</summary>
+      <div class="faqbody">
+        <p><b>Konto-Name</b> = dein GitHub-Benutzername (z.&nbsp;B. <code>octocat</code>).</p>
+        <ul>
+          <li><b>Ohne PAT:</b> es werden die öffentlichen Repos dieses Namens gesichert.</li>
+          <li><b>Mit PAT:</b> automatisch die Repos des <b>Token-Inhabers</b> (inkl. privater) – der Name ist dann nur eine Anzeige.</li>
+          <li>„Forks mit sichern“ = auch Forks anderer Nutzer backupen (Default: nein).</li>
+        </ul>
+        <p>Mehrere Konten? Einfach „+ Konto hinzufügen“ – jedes Konto hat eigene Zugangsdaten; ein Konto ohne PAT sichert dessen öffentliche Repos.</p>
+      </div>
+    </details>
+
+    <details id="faq-wo">
+      <summary>💾 Wo landen die Backups und wie stelle ich sie wieder her?</summary>
+      <div class="faqbody">
+        <p>Alle Mirrors liegen im Container unter <code>/opt/github-backup/repos/&lt;owner&gt;/&lt;repo&gt;.git</code>
+        – als vollwertige <b>Mirror-Kopie</b> mit allen Branches &amp; Tags.</p>
+        <p><b>Restore:</b></p>
+        <pre class="log">git clone /opt/github-backup/repos/&lt;owner&gt;/&lt;repo&gt;.git        # im Container
+git clone /pfad/zu/&lt;repo&gt;-&lt;datum&gt;.bundle                     # aus einem Snapshot
+pct pull &lt;CT-ID&gt; /opt/github-backup/repos/... ./              # raus auf den Host</pre>
+      </div>
+    </details>
+
+    <details id="faq-presets">
+      <summary>🧩 Was bedeuten die drei Backup-Modi?</summary>
+      <div class="faqbody">
+        <ul>
+          <li><b>① Code</b> – Mirror aller Branches &amp; Tags (1:1-Kopie des Repos)</li>
+          <li><b>② Code + Wiki</b> – zusätzlich der Wiki-Mirror (<code>&lt;repo&gt;.wiki.git</code>)</li>
+          <li><b>③ Komplett</b> – zusätzlich <b>Issues</b> und <b>Releases</b> als JSON-Export (Release-<i>Binäranhänge</i> werden nicht geladen)</li>
+        </ul>
+      </div>
+    </details>
+
+    <details id="faq-ausschluss">
+      <summary>🚫 Wie überspringe ich bestimmte Repos dauerhaft?</summary>
+      <div class="faqbody">
+        <p>Beim Scan die Spalte <b>🚫</b> anhaken → das Repo steht ab dann auf der dauerhaften
+        <b>Ausschlussliste</b> und wird auch vom täglichen Timer übersprungen. Häkchen weg = wieder dabei.</p>
+      </div>
+    </details>
+
+    <details id="faq-timer">
+      <summary>⏰ Wie funktioniert das tägliche Auto-Backup?</summary>
+      <div class="faqbody">
+        <p>Der systemd-Timer <code>ghbackup.timer</code> sichert täglich um die eingestellte Stunde
+        <b>alle Konten komplett</b> (außer Ausschlussliste) – Uhrzeit oben in der UI ändern und speichern reicht.
+        <code>Persistent=true</code>: fiel der Lauf aus (Container aus), holt er ihn beim Boot nach.</p>
+        <p>Timer-Status im Container: <code>systemctl list-timers ghbackup*</code></p>
+      </div>
+    </details>
+
+    <details id="faq-snapshot">
+      <summary>🧊 Was sind Snapshots?</summary>
+      <div class="faqbody">
+        <p>Ein Snapshot ist eine <b>einzige, unveränderliche Datei</b> (<code>git bundle</code>) pro Repo –
+        ideal zum Archivieren auf externe Medien. Erstellen per 🧊-Button in der Repo-Tabelle,
+        Restore einfach mit <code>git clone &lt;datei&gt;.bundle</code>.</p>
+      </div>
+    </details>
+
+    <details id="faq-probleme">
+      <summary>🩺 Etwas klappt nicht – wo sehe ich Details?</summary>
+      <div class="faqbody">
+        <ul>
+          <li>Service-Log: <code>pct exec &lt;CT-ID&gt; -- journalctl -u ghbackup -e</code></li>
+          <li>Backup-Logs: <code>/opt/github-backup/logs/</code> (eine Datei pro Lauf)</li>
+          <li>Installer-Status/Debug: Einzeiler mit <code>--status</code> bzw. <code>--debug</code></li>
+          <li>„Rate limit“-Meldung (HTTP 403) → PAT eintragen, dann 5.000/h</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -186,7 +307,8 @@ function accountRow(acc, i) {
   d.innerHTML = `
     <div style="flex:1 1 180px"><label>Konto-Name</label>
       <input type="text" value="${esc(acc.name)}" data-i="${i}" data-f="name" oninput="cfgDirty=true"></div>
-    <div style="flex:1 1 220px"><label>PAT (optional – •••• = gespeichert)</label>
+    <div style="flex:1 1 220px"><label>PAT (optional – •••• = gespeichert)
+      <a class="faqlink" onclick="openHelp('faq-pat')">was ist das / woher?</a></label>
       <input type="password" value="${esc(acc.token)}" placeholder="ghp_..." data-i="${i}" data-f="token" oninput="cfgDirty=true" autocomplete="off"></div>
     <div style="flex:0 0 auto; padding-bottom:6px">
       <label style="display:flex; gap:6px; align-items:center; cursor:pointer">
@@ -382,6 +504,18 @@ async function loadState() {
       <td>${esc(sn.repo)}</td><td><code>${esc(sn.file)}</code></td>
       <td>${fmtKB(sn.size_kb)}</td><td>${fmtDate(sn.created)}</td></tr>`).join("");
 }
+
+/* ── Hilfe-Modal ── */
+function openHelp(anchor) {
+  $("helpmodal").style.display = "flex";
+  if ($("helpdatadir")) $("helpdatadir").textContent = $("datadir").textContent || "";
+  if (anchor) {
+    const d = $(anchor);
+    if (d) { d.open = true; setTimeout(() => d.scrollIntoView({ block: "start" }), 0); }
+  }
+}
+function closeHelp() { $("helpmodal").style.display = "none"; }
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeHelp(); });
 
 /* ── Helfer ── */
 async function api(url, body) {
