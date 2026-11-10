@@ -161,17 +161,23 @@ wait_for_ct_network() {
 
 verify_ct_dns() {
     # IP allein reicht nicht – GitHub-API braucht funktionierende Namensauflösung.
-    # Live-Fall (2026-11-10, CT 200): IP da, aber /etc/resolv.conf ohne gültige
-    # Nameserver → jeder Scan starb mit "Name or service not known".
-    local id="$1" tries=0
-    info "Prüfe DNS im Container ..."
+    # Live-Fall (2026-11-10, CT 200): DNS ist FLAKY – ein einzelner getent-Erfolg
+    # reichte, Stunden später war wieder alles tot. Deshalb: 3 Erfolge in Folge
+    # verlangen; eine einzige Störung in diesem Fenster → Fallback + Freeze.
+    local id="$1" ok_count=0 tries=0
+    info "Prüfe DNS im Container (3x hintereinander) ..."
     while true; do
         if pct exec "$id" -- getent hosts api.github.com >/dev/null 2>&1; then
-            ok "DNS im Container funktioniert"
-            return 0
+            ok_count=$((ok_count + 1))
+            if [[ $ok_count -ge 3 ]]; then
+                ok "DNS im Container funktioniert (3x bestätigt)"
+                return 0
+            fi
+        else
+            ok_count=0
         fi
         tries=$((tries + 1))
-        if [[ $tries -ge 8 ]]; then
+        if [[ $tries -ge 10 ]]; then
             break
         fi
         sleep 2

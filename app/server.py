@@ -45,7 +45,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
