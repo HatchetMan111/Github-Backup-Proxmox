@@ -159,6 +159,39 @@ wait_for_ct_network() {
     done
 }
 
+verify_ct_dns() {
+    # IP allein reicht nicht – GitHub-API braucht funktionierende Namensauflösung.
+    # Live-Fall (2026-11-10, CT 200): IP da, aber /etc/resolv.conf ohne gültige
+    # Nameserver → jeder Scan starb mit "Name or service not known".
+    local id="$1" tries=0
+    info "Prüfe DNS im Container ..."
+    while true; do
+        if pct exec "$id" -- getent hosts api.github.com >/dev/null 2>&1; then
+            ok "DNS im Container funktioniert"
+            return 0
+        fi
+        tries=$((tries + 1))
+        if [[ $tries -ge 8 ]]; then
+            break
+        fi
+        sleep 2
+    done
+    # Fallback: DNS des Hosts (falls nicht loopback) + öffentliche Resolver eintragen
+    local host_ns ns_list
+    host_ns=$(grep -h '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | grep -v '^127\.' | head -1 || true)
+    ns_list="1.1.1.1 8.8.8.8"
+    if [[ -n "$host_ns" ]]; then
+        ns_list="$host_ns $ns_list"
+    fi
+    warn "DNS im Container defekt – schreibe Fallback-Nameserver ($ns_list) nach /etc/resolv.conf"
+    pct exec "$id" -- sh -c "printf 'nameserver %s\n' $ns_list > /etc/resolv.conf"
+    if pct exec "$id" -- getent hosts api.github.com >/dev/null 2>&1; then
+        ok "DNS-Fallback aktiv – Auflösung funktioniert"
+        return 0
+    fi
+    die "DNS im Container weiterhin ohne Funktion (auch mit Fallback).\n  Prüfe: pct exec $id -- cat /etc/resolv.conf && pct exec $id -- ping -c2 1.1.1.1\n  Firewall/Router: ausgehende DNS-Anfragen (Port 53) am Bridge-Netz erlauben."
+}
+
 # ── Argumente parsen ───────────────────────────────────────────────────────
 parse_args() {
     # Grube (bash -c): `bash -c "$(wget -qLO - URL)" --id 5` belegt das ERSTE
@@ -435,6 +468,7 @@ do_install() {
     ok "Container $CT_ID erstellt und gestartet"
 
     wait_for_ct_network "$CT_ID"
+    verify_ct_dns "$CT_ID"
 
     run_inner_setup "$CT_ID"
     verify_installation "$CT_ID"
@@ -457,6 +491,7 @@ do_update() {
         pct start "$ct_id"
         wait_for_ct_network "$ct_id"
     fi
+    verify_ct_dns "$ct_id"
 
     run_inner_setup "$ct_id"
     verify_installation "$ct_id"
