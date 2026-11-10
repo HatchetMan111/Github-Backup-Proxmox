@@ -45,7 +45,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
@@ -168,6 +168,36 @@ def _friendly_net_error(err):
     return str(err)
 
 
+_LAST_DNS_HEAL = 0.0  # Selbstheilung max. 1x pro Stunde anfassen
+
+
+def _heal_dns():
+    """DNS-Selbstheilung im Container (App läuft dort als root): hängt öffentliche
+    Nameserver an /etc/resolv.conf, wenn die Auflösung gerade tot ist – z. B. weil
+    ein DHCP-Renewal sie zerschossen hat. Kein Ersatz für die Installer-Freeze-
+    Variante (chattr +i), aber Rettungsanker, falls die Datei doch wieder kaputt ist.
+    Nicht-Root (lokale Testinstanz) und Fehler werden still ignoriert."""
+    global _LAST_DNS_HEAL
+    if os.geteuid() != 0:
+        return False
+    if time.time() - _LAST_DNS_HEAL < 3600:
+        return False
+    try:
+        with open("/etc/resolv.conf", "r", encoding="utf-8") as f:
+            content = f.read()
+        if "1.1.1.1" in content:
+            return False
+        with open("/etc/resolv.conf", "a", encoding="utf-8") as f:
+            f.write("\n# GitHub-Backup-Manager DNS-Selbstheilung\n"
+                    "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        _LAST_DNS_HEAL = time.time()
+        print("DNS-Selbstheilung: Nameserver 1.1.1.1/8.8.8.8 an /etc/resolv.conf "
+              "angehängt", flush=True)
+        return True
+    except OSError:
+        return False
+
+
 def gh_request(path, token=None, params=None, url=None, retries=4):
     """Ein GET auf api.github.com. Liefert (status, daten|fehlermeldung, next_url).
     `url` überschreibt path+params (wird für Cursor-Pagination genutzt).
@@ -203,6 +233,7 @@ def gh_request(path, token=None, params=None, url=None, retries=4):
         except Exception as exc:                            # DNS, Timeout, ...
             last_err = "%s: %s" % (type(exc).__name__, exc)
             if attempt < retries - 1:
+                _heal_dns()                                 # Container-Selbstheilung
                 time.sleep(min(1 + attempt, 8))             # 1, 2, 4, 8 s Backoff
     return 0, _friendly_net_error(last_err), None
 
