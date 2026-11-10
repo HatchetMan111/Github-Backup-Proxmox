@@ -233,6 +233,7 @@ write_inner_script() {
 # =============================================================================
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C   # verhindert perl/locale-Warnungen im frischen Debian-CT
 
 echo ">>> Pakete installieren (git, curl, ca-certificates) ..."
 apt-get update -qq
@@ -246,7 +247,6 @@ tar -xzf /tmp/ghbackup.tar.gz -C /tmp/ghbackup-src --strip-components=1
 install -m 644 /tmp/ghbackup-src/app/server.py /opt/github-backup/server.py
 install -m 644 /tmp/ghbackup-src/app/cli.py    /opt/github-backup/cli.py
 install -m 644 /tmp/ghbackup-src/app/static/index.html /opt/github-backup/static/index.html
-rm -rf /tmp/ghbackup-src /tmp/ghbackup.tar.gz
 
 echo ">>> systemd-Units installieren (aus dem Tarball) ..."
 install -m 644 /tmp/ghbackup-src/app/ghbackup.service     /etc/systemd/system/ghbackup.service
@@ -256,6 +256,9 @@ if [[ "${PORT}" != "4242" ]]; then
     sed -i "s/^Environment=.*/Environment=GITHUB_BACKUP_PORT=${PORT}/" /etc/systemd/system/ghbackup.service
 fi
 systemctl daemon-reload
+
+# Aufräumen erst NACH allen installs aus dem entpackten Tarball
+rm -rf /tmp/ghbackup-src /tmp/ghbackup.tar.gz
 
 echo ">>> Datenverzeichnis anlegen ..."
 mkdir -p /opt/github-backup/{repos,snapshots,logs}
