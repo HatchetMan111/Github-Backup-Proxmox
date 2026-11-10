@@ -45,7 +45,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
@@ -154,7 +154,21 @@ def _parse_link_next(link_header):
     return None
 
 
-def gh_request(path, token=None, params=None, url=None, retries=3):
+def _friendly_net_error(err):
+    """Übersetzt rohe Netzwerkfehler in verständliche, handlungsrelevante Meldungen."""
+    low = str(err).lower()
+    if "name or service not known" in low or "name resolution" in low or "no address" in low:
+        return ("DNS-Auflösung von api.github.com fehlgeschlagen (" + str(err) + "). "
+                "Mögliche Ursachen: kein Internet, flaky WLAN/DNS oder falscher DNS-Server. "
+                "Prüfen: 'ping -c1 api.github.com' und 'cat /etc/resolv.conf' – "
+                "bei kurzem DNS-Aussetzer einfach erneut scannen.")
+    if "timed out" in low or "timeout" in low:
+        return ("Netzwerk-Timeout bei api.github.com (" + str(err) + ") – "
+                "Verbindung instabil? Erneut versuchen.")
+    return str(err)
+
+
+def gh_request(path, token=None, params=None, url=None, retries=4):
     """Ein GET auf api.github.com. Liefert (status, daten|fehlermeldung, next_url).
     `url` überschreibt path+params (wird für Cursor-Pagination genutzt).
     Transiente Netzfehler (DNS/Timeout/5xx) werden mit Backoff wiederholt."""
@@ -189,8 +203,8 @@ def gh_request(path, token=None, params=None, url=None, retries=3):
         except Exception as exc:                            # DNS, Timeout, ...
             last_err = "%s: %s" % (type(exc).__name__, exc)
             if attempt < retries - 1:
-                time.sleep(1 + attempt)
-    return 0, last_err, None
+                time.sleep(min(1 + attempt, 8))             # 1, 2, 4, 8 s Backoff
+    return 0, _friendly_net_error(last_err), None
 
 
 def gh_paginate(path, token=None, params=None, max_pages=150):
