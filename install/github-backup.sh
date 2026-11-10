@@ -191,11 +191,11 @@ verify_ct_dns() {
     fi
     warn "DNS im Container defekt – schreibe Fallback-Nameserver ($ns_list) nach /etc/resolv.conf"
     pct exec "$id" -- sh -c "printf 'nameserver %s\n' $ns_list > /etc/resolv.conf"
-    # DHCP-Lease-Renewals überschreiben resolv.conf gern wieder (Live-Fall 2026-11-10:
-    # nach Installation OK, Stunden später wieder tot) → Datei gegen Änderungen einfrieren.
-    pct exec "$id" -- chattr +i /etc/resolv.conf 2>/dev/null || true
+    # Dauerhaft: dhclient-Hook (verhindert das Überschreiben durch Lease-Renewals —
+    # chattr +i funktioniert in unprivilegierten LXCs nicht) + nochmal prüfen.
+    pct exec "$id" -- bash -c 'mkdir -p /etc/dhcp/dhclient-enter-hooks.d && printf "make_resolv_conf() { :; }\n" > /etc/dhcp/dhclient-enter-hooks.d/no-dns'
     if pct exec "$id" -- getent hosts api.github.com >/dev/null 2>&1; then
-        ok "DNS-Fallback aktiv und eingefroren (chattr +i) – Auflösung funktioniert"
+        ok "DNS-Fallback aktiv und gegen DHCP-Überschreiben geschützt – Auflösung funktioniert"
         return 0
     fi
     die "DNS im Container weiterhin ohne Funktion (auch mit Fallback).\n  Prüfe: pct exec $id -- cat /etc/resolv.conf && pct exec $id -- ping -c2 1.1.1.1\n  Firewall/Router: ausgehende DNS-Anfragen (Port 53) am Bridge-Netz erlauben."
@@ -290,6 +290,14 @@ install -m 644 /tmp/ghbackup-src/app/server.py /opt/github-backup/server.py
 install -m 644 /tmp/ghbackup-src/app/cli.py    /opt/github-backup/cli.py
 install -m 644 /tmp/ghbackup-src/app/static/index.html /opt/github-backup/static/index.html
 
+echo ">>> Nameserver festschreiben (DHCP-DNS des Netzes ist hier unzuverlässig) ..."
+# dhclient-Hook: verhindert, dass Lease-Renewals /etc/resolv.conf überschreiben.
+# (chattr +i funktioniert in unprivilegierten LXCs nicht – fehlendes Capability,
+#  Live-Fund 2026-11-10: CT-DNS war nach Stunden wieder kaputt.)
+mkdir -p /etc/dhcp/dhclient-enter-hooks.d
+printf '# GitHub-Backup-Manager: resolv.conf nicht von DHCP überschreiben lassen\nmake_resolv_conf() { :; }\n' > /etc/dhcp/dhclient-enter-hooks.d/no-dns
+printf 'domain home.arpa\nsearch home.arpa\nnameserver %s\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n' "${HOST_DNS:-1.1.1.1}" > /etc/resolv.conf
+
 echo ">>> systemd-Units installieren (aus dem Tarball) ..."
 install -m 644 /tmp/ghbackup-src/app/ghbackup.service     /etc/systemd/system/ghbackup.service
 install -m 644 /tmp/ghbackup-src/app/ghbackup-cli.service /etc/systemd/system/ghbackup-cli.service
@@ -316,6 +324,10 @@ INNEREOF
 run_inner_setup() {
     local ct_id="$1"
     header "⚙️  Installiere App im Container $ct_id"
+    # DNS des Hosts in den Container bringen (dort resolvert das Setup garantiert –
+    # der DHCP-DNS des Zielnetzes war live unzuverlässig, siehe verify_ct_dns)
+    HOST_DNS=$(grep -h '^nameserver' /etc/resolv.conf 2>/dev/null \
+               | awk '{print $2}' | grep -v '^127\.' | head -1 || true)
     write_inner_script
     pct push "$ct_id" "$TMP_DIR/setup-inner.sh" /root/setup-inner.sh
     # App-Code + systemd-Units kommen aus dem GitHub-Tarball (funktioniert auch
