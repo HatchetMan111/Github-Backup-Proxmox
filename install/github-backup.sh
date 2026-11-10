@@ -38,6 +38,8 @@ CT_BRIDGE="vmbr0"
 CT_IP="dhcp"
 CT_GATEWAY=""               # nur bei statischer IP nötig, z. B. 192.168.1.1
 CT_PASSWORD=""              # leer = automatisch generieren
+CT_SSHKEY=""                # Pfad ODER URL zu einer Public-Key-Datei (optional)
+SSH_KEY_FILE=""             # aufgelöste Key-Datei für pct create
 PORT=4242                   # Web-UI-Port im Container
 UNINSTALL=false
 UPDATE=false
@@ -224,6 +226,7 @@ parse_args() {
             --ip)            CT_IP="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --gateway)       CT_GATEWAY="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --password)      CT_PASSWORD="${args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --sshkey)        CT_SSHKEY="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --port)          PORT="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --force)         FORCE_RECREATE=true; i=$((i+1)) ;;
             --yes|-y)        ASSUME_YES=true; i=$((i+1)) ;;
@@ -254,6 +257,8 @@ Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --i
   --ip CIDR        Statt DHCP, z. B. 192.168.1.50/24 (+ --gateway 192.168.1.1)
   --gateway GW     Gateway für statische IP
   --password PW    Root-Passwort (Default: automatisch generiert)
+  --sshkey PFAD    Public-Key-Datei oder URL – ssh-key-Login als root im CT
+                   (z. B. --sshkey https://raw.githubusercontent.com/USER/REPO/main/install/desktop.pub)
   --port PORT      Web-UI-Port im Container (Default: 4242)
   --force          Vorhandenen Container mit gleichem Hostname löschen und neu anlegen
   --yes / -y       Rückfragen überspringen
@@ -474,6 +479,23 @@ do_install() {
     if [[ -n "$CT_GATEWAY" ]]; then
         net0+=",gateway=${CT_GATEWAY}"
     fi
+    local ssh_keys_args=()
+    if [[ -n "$CT_SSHKEY" ]]; then
+        if [[ "$CT_SSHKEY" == http://* || "$CT_SSHKEY" == https://* ]]; then
+            info "Lade SSH-Public-Key herunter ..."
+            wget -q --tries=3 -O "$TMP_DIR/sshkey.pub" "$CT_SSHKEY" || die "SSH-Key-URL nicht ladbar: $CT_SSHKEY"
+        elif [[ -f "$CT_SSHKEY" ]]; then
+            cp "$CT_SSHKEY" "$TMP_DIR/sshkey.pub"
+        else
+            die "SSH-Key-Datei nicht gefunden: $CT_SSHKEY"
+        fi
+        if [[ ! -s "$TMP_DIR/sshkey.pub" ]]; then
+            die "SSH-Key-Datei ist leer: $CT_SSHKEY"
+        fi
+        SSH_KEY_FILE="$TMP_DIR/sshkey.pub"
+        ok "SSH-Public-Key wird in den Container installiert (ssh-key-Login als root)"
+        ssh_keys_args=(--ssh-public-keys "$SSH_KEY_FILE")
+    fi
     pct create "$CT_ID" "local:vztmpl/${template}" \
         --hostname "$CT_HOSTNAME" \
         --cores "$CT_CORES" \
@@ -485,7 +507,8 @@ do_install() {
         --features nesting=1 \
         --onboot 1 \
         --start 1 \
-        --password "$CT_PASSWORD"
+        --password "$CT_PASSWORD" \
+        "${ssh_keys_args[@]}"
     ok "Container $CT_ID erstellt und gestartet"
 
     wait_for_ct_network "$CT_ID"
