@@ -45,7 +45,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
@@ -172,11 +172,13 @@ _LAST_DNS_HEAL = 0.0  # Selbstheilung max. 1x pro Stunde anfassen
 
 
 def _heal_dns():
-    """DNS-Selbstheilung im Container (App läuft dort als root): hängt öffentliche
-    Nameserver an /etc/resolv.conf, wenn die Auflösung gerade tot ist – z. B. weil
-    ein DHCP-Renewal sie zerschossen hat. Kein Ersatz für die Installer-Freeze-
-    Variante (chattr +i), aber Rettungsanker, falls die Datei doch wieder kaputt ist.
-    Nicht-Root (lokale Testinstanz) und Fehler werden still ignoriert."""
+    """DNS-Selbstheilung im Container (App läuft dort als root): schreibt
+    /etc/resolv.conf auf öffentliche Resolver um, wenn die Auflösung gerade tot
+    ist. UMSCHREIBEN statt Anhängen: antwortet der erste Nameserver mit NXDOMAIN
+    (z. B. AdGuard-Filterlisten) oder gar nicht (flaky Router-DNS), fragt glibc
+    die nachfolgenden gar nicht mehr – angehängte Resolver wären wirkungslos.
+    Backup unter resolv.conf.bak. Nicht-Root (lokale Testinstanz) und Fehler
+    werden still ignoriert."""
     global _LAST_DNS_HEAL
     if os.geteuid() != 0:
         return False
@@ -185,14 +187,16 @@ def _heal_dns():
     try:
         with open("/etc/resolv.conf", "r", encoding="utf-8") as f:
             content = f.read()
-        if "1.1.1.1" in content:
+        if "1.1.1.1" in content and "8.8.8.8" in content:
             return False
-        with open("/etc/resolv.conf", "a", encoding="utf-8") as f:
-            f.write("\n# GitHub-Backup-Manager DNS-Selbstheilung\n"
-                    "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        with open("/etc/resolv.conf.bak", "w", encoding="utf-8") as f:
+            f.write(content + "\n# (Backup vor DNS-Selbstheilung)\n")
+        with open("/etc/resolv.conf", "w", encoding="utf-8") as f:
+            f.write("# GitHub-Backup-Manager DNS-Selbstheilung (Backup: resolv.conf.bak)\n"
+                    "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n")
         _LAST_DNS_HEAL = time.time()
-        print("DNS-Selbstheilung: Nameserver 1.1.1.1/8.8.8.8 an /etc/resolv.conf "
-              "angehängt", flush=True)
+        print("DNS-Selbstheilung: /etc/resolv.conf auf öffentliche Resolver "
+              "umgeschrieben (Backup: resolv.conf.bak)", flush=True)
         return True
     except OSError:
         return False

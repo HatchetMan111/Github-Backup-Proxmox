@@ -185,7 +185,7 @@ verify_ct_dns() {
     # Fallback: DNS des Hosts (falls nicht loopback) + öffentliche Resolver eintragen
     local host_ns ns_list
     host_ns=$(grep -h '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | grep -v '^127\.' | head -1 || true)
-    ns_list="1.1.1.1 8.8.8.8"
+    ns_list="1.1.1.1 8.8.8.8 9.9.9.9"
     if [[ -n "$host_ns" ]]; then
         ns_list="$host_ns $ns_list"
     fi
@@ -296,7 +296,7 @@ echo ">>> Nameserver festschreiben (DHCP-DNS des Netzes ist hier unzuverlässig)
 #  Live-Fund 2026-11-10: CT-DNS war nach Stunden wieder kaputt.)
 mkdir -p /etc/dhcp/dhclient-enter-hooks.d
 printf '# GitHub-Backup-Manager: resolv.conf nicht von DHCP überschreiben lassen\nmake_resolv_conf() { :; }\n' > /etc/dhcp/dhclient-enter-hooks.d/no-dns
-printf 'domain home.arpa\nsearch home.arpa\nnameserver %s\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n' "${HOST_DNS:-1.1.1.1}" > /etc/resolv.conf
+printf 'domain home.arpa\nsearch home.arpa\nnameserver %s\nnameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n' "${HOST_DNS:-1.1.1.1}" > /etc/resolv.conf
 
 echo ">>> systemd-Units installieren (aus dem Tarball) ..."
 install -m 644 /tmp/ghbackup-src/app/ghbackup.service     /etc/systemd/system/ghbackup.service
