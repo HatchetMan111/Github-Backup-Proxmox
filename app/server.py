@@ -21,6 +21,8 @@ import json
 import os
 import re
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -45,7 +47,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.6"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
@@ -154,18 +156,107 @@ def _parse_link_next(link_header):
     return None
 
 
-def _friendly_net_error(err):
+def _friendly_net_error(err, host="api.github.com"):
     """Übersetzt rohe Netzwerkfehler in verständliche, handlungsrelevante Meldungen."""
     low = str(err).lower()
     if "name or service not known" in low or "name resolution" in low or "no address" in low:
-        return ("DNS-Auflösung von api.github.com fehlgeschlagen (" + str(err) + "). "
+        return ("DNS-Auflösung von %s fehlgeschlagen (%s). "
                 "Mögliche Ursachen: kein Internet, flaky WLAN/DNS oder falscher DNS-Server. "
-                "Prüfen: 'ping -c1 api.github.com' und 'cat /etc/resolv.conf' – "
-                "bei kurzem DNS-Aussetzer einfach erneut scannen.")
+                "Prüfen: 'ping -c1 %s' und 'cat /etc/resolv.conf' – "
+                "bei kurzem DNS-Aussetzer einfach erneut scannen." % (host, err, host))
     if "timed out" in low or "timeout" in low:
-        return ("Netzwerk-Timeout bei api.github.com (" + str(err) + ") – "
-                "Verbindung instabil? Erneut versuchen.")
+        return ("Netzwerk-Timeout bei %s (%s) – "
+                "Verbindung instabil? Erneut versuchen." % (host, err))
     return str(err)
+
+
+# GitHub-Hosts, deren Auflösung wir selbst übernehmen (lokale DNS-Server –
+# AdGuard/Router – antworten in manchen Netzen zeitweise NXDOMAIN, woraufhin
+# glibc die nachfolgenden Nameserver nie anfragt. Beweis: strace 2026-11-11).
+GITHUB_HOSTS = ("api.github.com", "github.com", "codeload.github.com")
+PUBLIC_RESOLVERS = ("1.1.1.1", "8.8.8.8", "9.9.9.9")
+HOSTS_MARKER = "# GitHub-Backup-Manager"
+
+
+def _dns_query_a(server, name, timeout=4):
+    """Rohe UDP-DNS-Anfrage (A-Record) direkt an einen öffentlichen Resolver –
+    BYPASS für das lokale DNS. Liefert die erste A-IP oder None."""
+    try:
+        query = struct.pack(">HHHHHH", 0x4321, 0x0100, 1, 0, 0, 0)
+        for part in name.split("."):
+            query += bytes([len(part)]) + part.encode()
+        query += b"\x00" + struct.pack(">HH", 1, 1)  # QTYPE=A, QCLASS=IN
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.sendto(query, (server, 53))
+        data, _ = sock.recvfrom(512)
+        sock.close()
+        rcode = data[3] & 0x0F
+        if rcode != 0:
+            return None
+        ancount = struct.unpack(">H", data[6:8])[0]
+        if ancount == 0:
+            return None
+        # Antwort-Sektion parsen: Namen überspringen (Pointer-Kompression), A-RR lesen
+        offset = 12
+        while data[offset] != 0:            # Question-Name
+            if data[offset] & 0xC0:
+                offset += 1
+                break
+            offset += data[offset] + 1
+        offset += 5                          # Null-Byte + QTYPE + QCLASS
+        for _ in range(ancount):
+            if data[offset] & 0xC0:          # Pointer auf Namen
+                offset += 2
+            else:
+                while data[offset] != 0:
+                    offset += data[offset] + 1
+                offset += 1
+            rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", data[offset:offset + 10])
+            offset += 10
+            if rtype == 1 and rdlen == 4:    # A-Record
+                return ".".join(str(b) for b in data[offset:offset + 4])
+            offset += rdlen
+    except (OSError, struct.error, IndexError):
+        return None
+    return None
+
+
+def _public_dns_resolve(host):
+    """Resolve `host` über öffentliche Resolver (1.1.1.1 → 8.8.8.8 → 9.9.9.9)."""
+    for resolver in PUBLIC_RESOLVERS:
+        ip = _dns_query_a(resolver, host)
+        if ip:
+            return ip
+    return None
+
+
+def refresh_github_hosts():
+    """Pinnt die GitHub-IPs in /etc/hosts (nur root). Danach geht getaddrinfo
+    für api.github.com/github.com/codeload.github.com immer über die hosts-Datei
+    – komplett unabhängig vom lokalen DNS-Server. Gilt auch für `git clone`."""
+    if os.geteuid() != 0:
+        return False
+    entries = []
+    for host in GITHUB_HOSTS:
+        ip = _public_dns_resolve(host)
+        if ip:
+            entries.append((ip, host))
+    if not entries:
+        return False
+    try:
+        with open("/etc/hosts", "r", encoding="utf-8") as f:
+            content = f.read()
+        kept = [line for line in content.splitlines() if HOSTS_MARKER not in line]
+        pinned = ["%s %s  %s" % (ip, host, HOSTS_MARKER) for ip, host in entries]
+        with open("/etc/hosts", "w", encoding="utf-8") as f:
+            f.write("\n".join(kept).rstrip("\n") + "\n" + "\n".join(pinned) + "\n")
+        print("GitHub-Hosts in /etc/hosts gepinnt (%d Einträge, öffentliche "
+              "Resolver): %s" % (len(entries), ", ".join(h for _, h in entries)),
+              flush=True)
+        return True
+    except OSError:
+        return False
 
 
 _LAST_DNS_HEAL = 0.0  # Selbstheilung max. 1x pro Stunde anfassen
@@ -205,12 +296,21 @@ def _heal_dns():
 def gh_request(path, token=None, params=None, url=None, retries=4):
     """Ein GET auf api.github.com. Liefert (status, daten|fehlermeldung, next_url).
     `url` überschreibt path+params (wird für Cursor-Pagination genutzt).
+    `path` darf auch eine absolute URL sein (Link-Header liefert absolute
+    next-URLs — der Bug von 2026-11-11: https://api.github.comhttps://...).
     Transiente Netzfehler (DNS/Timeout/5xx) werden mit Backoff wiederholt."""
     if url is None:
-        url = API_BASE + path
-        if params:
-            url += "?" + urllib.parse.urlencode(params)
+        if path.startswith(("http://", "https://")):
+            url = path                      # absolute URL — nicht präfixieren!
+        else:
+            url = API_BASE + path
+            if params:
+                url += "?" + urllib.parse.urlencode(params)
     last_err = "unbekannt"
+    try:
+        fail_host = urllib.parse.urlparse(url).hostname or "api.github.com"
+    except ValueError:
+        fail_host = "api.github.com"
     for attempt in range(retries):
         req = urllib.request.Request(url, headers={
             "User-Agent": "GitHub-Backup-Manager/" + APP_VERSION,
@@ -239,7 +339,7 @@ def gh_request(path, token=None, params=None, url=None, retries=4):
             if attempt < retries - 1:
                 _heal_dns()                                 # Container-Selbstheilung
                 time.sleep(min(1 + attempt, 8))             # 1, 2, 4, 8 s Backoff
-    return 0, _friendly_net_error(last_err), None
+    return 0, _friendly_net_error(last_err, fail_host), None
 
 
 def gh_paginate(path, token=None, params=None, max_pages=150):
@@ -591,6 +691,7 @@ def _job_thread(repo_list, preset, fd, source):
 
 def backup_all_cli():
     """Timer-/CLI-Modus: alle Konten scannen und alles (außer Ausschlussliste) sichern."""
+    refresh_github_hosts()          # Timer-Lauf: GitHub-IPs frisch pinnen
     cfg = load_config()
     if not cfg["accounts"]:
         print("Keine Konten konfiguriert – nichts zu tun. Erst in der Web-UI einrichten.")
@@ -800,6 +901,7 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "message": "Konfiguration gespeichert"}
 
     def api_scan(self, body):
+        refresh_github_hosts()      # vor jedem Scan: IP-Pinnung auffrischen
         cfg = load_config()
         try:
             idx = int(body.get("account", 0))
@@ -853,6 +955,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve():
     ensure_dirs()
     ensure_askpass()
+    refresh_github_hosts()          # GitHub-IPs pinnen → unabhängig vom lokalen DNS
     global STATE
     STATE = load_state()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
