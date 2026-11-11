@@ -229,7 +229,8 @@
       Issues-/Releases-JSON). Diese Datei aufs NAS/USB/den eigenen PC kopieren –
       <b>Re-Upload später:</b> <code>git push --mirror https://github.com/&lt;neues-konto&gt;/&lt;repo&gt;.git</code>
       (aus dem entpackten <code>repos/&lt;owner&gt;/&lt;repo&gt;.git</code>). Wenn der Container oder GitHub selbst weg ist,
-      ist diese Datei dein Backup.</div>
+      ist diese Datei dein Backup. <b>Auto:</b> monatlich am 1. um 04:30 (nur die letzten 3 werden behalten) —
+      einzelne Repos auch per ⬆-Button direkt auf GitHub wiederherstellbar.</div>
     <div class="scrollbox" style="margin-top:10px">
       <table id="exporttable"><thead><tr>
         <th>Datei</th><th>Größe</th><th>Erstellt</th><th></th>
@@ -528,7 +529,7 @@ async function loadState() {
   const j = s.job;
   $("jobbadge").className = "badge" + (j.running ? " on" : "");
   $("jobbadge").textContent = j.running
-    ? `Backup läuft (${j.done}/${j.total})` : "kein Backup aktiv";
+    ? `Job läuft (${j.done}/${j.total})` : "kein Job aktiv";
   $("stopbtn").disabled = !j.running;
   $("bar").style.width = j.total ? Math.round(100 * j.done / j.total) + "%" : "0";
   $("jcurrent").textContent = j.current ? "▶ " + j.current + (j.stop_requested ? " (Stop angefordert)" : "") : "";
@@ -552,7 +553,8 @@ async function loadState() {
       <td>${m.last_commit || "–"}</td>
       <td>${fmtDate(m.last_backup)}</td>
       <td class="muted">${extras || "–"}</td>
-      <td><button class="ghost small" onclick="snapshot('${esc(name)}')">🧊 Snapshot</button></td>
+      <td><button class="ghost small" onclick="snapshot('${esc(name)}')">🧊</button>
+          <button class="ghost small" title="Auf GitHub wiederherstellen (Repo anlegen + push --mirror)" onclick="restoreRepo('${esc(name)}')">⬆</button></td>
     </tr>`;
   }).join("");
 
@@ -583,6 +585,18 @@ function openHelp(anchor) {
 }
 function closeHelp() { $("helpmodal").style.display = "none"; }
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeHelp(); });
+
+/* ── Restore-Assistent ── */
+async function restoreRepo(repo) {
+  if (!confirm(`„${repo}" auf GitHub wiederherstellen?\n\n` +
+      `• Repo wird (falls nötig) NEU angelegt — als privat\n` +
+      `• Existiert es schon, werden seine Refs vom Mirror ÜBERSCHRIEBEN!\n\n` +
+      `Fortfahren?`)) return;
+  show($("cfgmsg"), true, "Restore läuft — Fortschritt im Live-Log ⬆");
+  const r = await api("/api/restore", { repos: [repo] });
+  show($("cfgmsg"), r.ok, r.message || r.error);
+  loadState();
+}
 
 /* ── Komplett-Export ── */
 async function createExport() {
@@ -646,7 +660,9 @@ function fmtKB(kb) {
 function fmtDate(iso) { return iso ? iso.replace("T", " ").slice(0, 16) : "–"; }
 
 loadState();
-setInterval(loadState, 2000);
+// Polling: 3 s im Vordergrund, pausiert bei verstecktem Tab (Chrome liest dann
+// keine Socket-Daten mehr — Server-Threads würden sonst im Write hängen)
+setInterval(() => { if (!document.hidden) loadState(); }, 3000);
 </script>
 </body>
 </html>

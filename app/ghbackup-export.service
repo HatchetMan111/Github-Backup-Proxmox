@@ -1,0 +1,9 @@
+[Unit]
+Description=GitHub-Backup-Manager monatlicher Komplett-Export
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/github-backup
+ExecStart=/usr/bin/python3 /opt/github-backup/server.py auto-export

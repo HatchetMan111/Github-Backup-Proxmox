@@ -304,13 +304,20 @@ printf '# GitHub-Backup-Manager: resolv.conf nicht von DHCP überschreiben lasse
 printf 'domain home.arpa\nsearch home.arpa\nnameserver %s\nnameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n' "${HOST_DNS:-1.1.1.1}" > /etc/resolv.conf
 
 echo ">>> systemd-Units installieren (aus dem Tarball) ..."
-install -m 644 /tmp/ghbackup-src/app/ghbackup.service     /etc/systemd/system/ghbackup.service
-install -m 644 /tmp/ghbackup-src/app/ghbackup-cli.service /etc/systemd/system/ghbackup-cli.service
-install -m 644 /tmp/ghbackup-src/app/ghbackup.timer       /etc/systemd/system/ghbackup.timer
+install -m 644 /tmp/ghbackup-src/app/ghbackup.service        /etc/systemd/system/ghbackup.service
+install -m 644 /tmp/ghbackup-src/app/ghbackup-cli.service    /etc/systemd/system/ghbackup-cli.service
+install -m 644 /tmp/ghbackup-src/app/ghbackup.timer          /etc/systemd/system/ghbackup.timer
+install -m 644 /tmp/ghbackup-src/app/ghbackup-export.service /etc/systemd/system/ghbackup-export.service
+install -m 644 /tmp/ghbackup-src/app/ghbackup-export.timer   /etc/systemd/system/ghbackup-export.timer
 if [[ "${PORT}" != "4242" ]]; then
     sed -i "s/^Environment=.*/Environment=GITHUB_BACKUP_PORT=${PORT}/" /etc/systemd/system/ghbackup.service
 fi
 systemctl daemon-reload
+
+echo ">>> Services aktivieren (Web-UI + Backup- und Export-Timer) ..."
+systemctl enable --now ghbackup.service
+systemctl enable --now ghbackup.timer
+systemctl enable --now ghbackup-export.timer
 
 # Aufräumen erst NACH allen installs aus dem entpackten Tarball
 rm -rf /tmp/ghbackup-src /tmp/ghbackup.tar.gz
@@ -360,11 +367,16 @@ verify_installation() {
     done
 
     # Timer aktiv?
-    if pct exec "$ct_id" -- systemctl is-active --quiet ghbackup.timer 2>/dev/null; then
-        ok "Täglicher Timer ghbackup.timer aktiv"
-    else
-        warn "Timer ghbackup.timer ist nicht aktiv (tägliches Backup aus)"
-    fi
+        if pct exec "$ct_id" -- systemctl is-active --quiet ghbackup.timer 2>/dev/null; then
+            ok "Täglicher Timer ghbackup.timer aktiv"
+        else
+            warn "Timer ghbackup.timer ist nicht aktiv (tägliches Backup aus)"
+        fi
+        if pct exec "$ct_id" -- systemctl is-active --quiet ghbackup-export.timer 2>/dev/null; then
+            ok "Monatlicher Export-Timer ghbackup-export.timer aktiv"
+        else
+            warn "Export-Timer ghbackup-export.timer nicht aktiv"
+        fi
 
     # Web-UI antwortet? (Grube: curl -w gibt bei Verbindungsfehler bereits 000 aus –
     # NIE zusätzlich || echo 000 anhängen, sonst wird der Check falsch-positiv.)

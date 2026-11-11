@@ -47,7 +47,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.2.0"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
@@ -293,11 +293,13 @@ def _heal_dns():
         return False
 
 
-def gh_request(path, token=None, params=None, url=None, retries=4):
-    """Ein GET auf api.github.com. Liefert (status, daten|fehlermeldung, next_url).
+def gh_request(path, token=None, params=None, url=None, retries=4,
+               method="GET", payload=None):
+    """GET/POST auf api.github.com. Liefert (status, daten|fehlermeldung, next_url).
     `url` überschreibt path+params (wird für Cursor-Pagination genutzt).
     `path` darf auch eine absolute URL sein (Link-Header liefert absolute
     next-URLs — der Bug von 2026-11-11: https://api.github.comhttps://...).
+    POST mit `payload` (JSON) für Schreiboperationen (z. B. Repo-Anlage).
     Transiente Netzfehler (DNS/Timeout/5xx) werden mit Backoff wiederholt."""
     if url is None:
         if path.startswith(("http://", "https://")):
@@ -319,6 +321,10 @@ def gh_request(path, token=None, params=None, url=None, retries=4):
         })
         if token:
             req.add_header("Authorization", "Bearer " + token)
+        if method == "POST" and payload is not None:
+            req.add_header("Content-Type", "application/json")
+            req.data = json.dumps(payload).encode("utf-8")
+            req.method = "POST"
         try:
             with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -822,6 +828,10 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; c
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Socket-Timeout für jede Handler-Verbindung: ohne dieses Attribut blockiert
+    # wfile.write EWIG, wenn ein Client (z. B. Browser-Tab im Hintergrund)
+    # aufhört zu lesen — Live-Fund 2026-11-11 (Threads wedgen für Stunden).
+    timeout = 60
 
     def log_message(self, fmt, *args):  # Journal nicht mit Access-Logs fluten
         if "/api/" not in (args[0] if args else ""):
@@ -912,6 +922,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(self.api_excluded(body))
         elif self.path == "/api/export":
             self._send_json(self.api_export_create())
+        elif self.path == "/api/restore":
+            self._send_json(self.api_restore(body))
         elif self.path == "/api/doctor":
             self._send_json(self.api_doctor())
         else:
@@ -1108,11 +1120,21 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "checks": checks, "problems": n_bad,
                 "disk": {"used_pct": used_pct}}
 
-    def api_export_create(self):
-        entry, err = create_export()
-        if err:
-            return {"ok": False, "error": err}
-        return {"ok": True, "export": entry}
+    def api_restore(self, body):
+        repos = body.get("repos")
+        if not isinstance(repos, list) or not repos:
+            return {"ok": False, "error": "repos-Liste fehlt"}
+        entries = []
+        for full_name in repos:
+            full_name = str(full_name).strip()
+            if not full_name or not os.path.exists(mirror_path(full_name)):
+                return {"ok": False, "error": "Kein Mirror für %s vorhanden"
+                        % (full_name or "?")}
+            entries.append({"full_name": full_name,
+                            "private": bool(body.get("private", True)),
+                            "force": bool(body.get("force", False))})
+        ok, msg = start_restore_job(entries, source="Web-UI")
+        return {"ok": ok, "message": msg}
 
     def api_excluded(self, body):
         cfg = load_config()
@@ -1130,6 +1152,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve():
+    import faulthandler, signal
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr)  # Stack-Dump: kill -USR1 <pid>
     ensure_dirs()
     ensure_askpass()
     refresh_github_hosts()          # GitHub-IPs pinnen → unabhängig vom lokalen DNS
@@ -1158,6 +1182,161 @@ def status():
     return 0
 
 
+# ── Restore-Assistent (Mirror → GitHub) ────────────────────────────────────
+def run_restore_job(entries, cfg, source="restore"):
+    """Stellt Mirrors auf GitHub wieder her: Repo anlegen (falls nötig) +
+    git push --mirror. entries: [{"full_name": "owner/name", "private": bool,
+    "force": bool}]. Nutzt dieselbe Job-Infrastruktur (Live-Log, Lock)."""
+    JOB.running = True
+    JOB.stop_requested = False
+    JOB.total = len(entries)
+    JOB.done = 0
+    JOB.results = {"ok": 0, "warn": 0, "fail": 0}
+    JOB.current = None
+    JOB.started_at = now_iso()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        JOB.log_fh = open(os.path.join(LOGS_DIR, "restore-%s.log" % stamp),
+                          "a", encoding="utf-8")
+    except OSError:
+        JOB.log_fh = None
+    JOB.add_log("=== Restore gestartet (%s, %d Repos — Refs im Ziel werden "
+                "überschrieben) ===" % (source, len(entries)))
+    try:
+        for ent in entries:
+            if JOB.stop_requested:
+                JOB.add_log("■  Stop angefordert — breche ab (%d/%d erledigt)"
+                            % (JOB.done, JOB.total))
+                break
+            full_name = ent["full_name"]
+            private = bool(ent.get("private", True))
+            force = bool(ent.get("force", False))
+            JOB.current = full_name
+            _, _, name = full_name.partition("/")
+            mirror = mirror_path(full_name)
+            token = token_for_repo(full_name, cfg)
+
+            # 1) Repo auf GitHub anlegen (falls nicht vorhanden)
+            st, data, _ = gh_request("/user/repos", token, method="POST",
+                                     payload={"name": name, "private": private,
+                                              "description": "Wiederhergestellt "
+                                              "aus GitHub-Backup-Manager"})
+            if st in (201, 202):
+                JOB.add_log("↑  %s: Repo neu angelegt (%s)" %
+                            (full_name, "privat" if private else "öffentlich"))
+                note = ""
+            elif st in (422, 409):
+                if not force:
+                    JOB.add_log("⚠  %s: existiert bereits auf GitHub — "
+                                "übersprungen (force aktivieren, um Refs zu "
+                                "überschreiben)" % full_name)
+                    JOB.results["warn"] += 1
+                    JOB.done += 1
+                    continue
+                JOB.add_log("↑  %s: existiert bereits — Refs werden "
+                            "überschrieben (force)" % full_name)
+                note = "Refs überschrieben (force)"
+            elif st in (401, 403):
+                JOB.add_log("✘  %s: PAT darf keine Repos anlegen (HTTP %s) — "
+                            "Token-Scope prüfen (classic: 'repo' | fine-grained: "
+                            "Administration write + Contents write)"
+                            % (full_name, st))
+                JOB.results["fail"] += 1
+                JOB.done += 1
+                continue
+            else:
+                JOB.add_log("✘  %s: Repo-Anlage fehlgeschlagen (HTTP %s: %s)"
+                            % (full_name, st, str(data)[:120]))
+                JOB.results["fail"] += 1
+                JOB.done += 1
+                continue
+
+            # 2) Mirror hochladen (Token via GIT_ASKPASS — nie in Prozess-Args)
+            proc = run_git(["-C", mirror, "push", "--mirror",
+                            "https://github.com/%s.git" % full_name], token)
+            if proc.returncode == 0:
+                refs = len([x for x in (proc.stderr or "").splitlines()
+                            if "->" in x])
+                JOB.add_log("✔  %s: hochgeladen (%s)" %
+                            (full_name, note or "%d Refs aktualisiert" % refs))
+                JOB.results["ok"] += 1
+            else:
+                JOB.add_log("✘  %s: push fehlgeschlagen:\n%s"
+                            % (full_name, last_stderr(proc)))
+                JOB.results["fail"] += 1
+            JOB.done += 1
+        JOB.add_log("=== Restore fertig: %d ok, %d übersprungen/Warnung, "
+                    "%d fehlgeschlagen ==="
+                    % (JOB.results["ok"], JOB.results["warn"], JOB.results["fail"]))
+    finally:
+        JOB.current = None
+        JOB.running = False
+        if JOB.log_fh:
+            JOB.log_fh.close()
+            JOB.log_fh = None
+
+
+def start_restore_job(entries, source="restore"):
+    if not entries:
+        return False, "Keine Repos angegeben"
+    cfg = load_config()
+    if not any((a.get("token") or "").strip() for a in cfg.get("accounts", [])):
+        return False, "Kein PAT hinterlegt — Restore braucht Schreibrechte auf GitHub"
+    fd = try_lock()
+    if fd is None:
+        return False, "Es läuft bereits ein Backup/Restore"
+    t = threading.Thread(target=_restore_thread,
+                         args=(entries, cfg, fd, source), daemon=True)
+    t.start()
+    return True, "Restore gestartet (%d Repos) — Fortschritt im Live-Log" % len(entries)
+
+
+def _restore_thread(entries, cfg, fd, source):
+    try:
+        run_restore_job(entries, cfg, source)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fd.close()
+
+
+# ── Auto-Export + Rotation (monatlicher Timer) ─────────────────────────────
+EXPORT_KEEP = 3
+
+
+def rotate_exports(keep=EXPORT_KEEP):
+    """Behält nur die neuesten `keep` Export-Dateien (neueste zuerst)."""
+    with STATE_LOCK:
+        exports = sorted(STATE.get("exports", []),
+                         key=lambda e: e.get("created", ""), reverse=True)
+        old = exports[keep:]
+        STATE["exports"] = exports[:keep]
+        save_state(STATE)
+    removed = 0
+    for entry in old:
+        try:
+            os.remove(entry["file"])
+            removed += 1
+        except OSError:
+            pass
+    return len(old), removed
+
+
+def auto_export():
+    """Timer-Einstieg: Export erzeugen + rotieren. Für ghbackup-export.service."""
+    entry, err = create_export()
+    if err:
+        print("Auto-Export fehlgeschlagen: %s" % err, flush=True)
+        return 1
+    removed, deleted = rotate_exports()
+    print("Auto-Export fertig: %s (%d KB) — Rotation: %d Alt-Exporte entfernt "
+          "(%d gelöscht)" % (entry["name"], entry["size_kb"], removed, deleted),
+          flush=True)
+    return 0
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "serve"
@@ -1166,9 +1345,11 @@ def main(argv=None):
         return 0
     if cmd == "backup-all":
         return backup_all_cli()
+    if cmd == "auto-export":
+        return auto_export()
     if cmd == "status":
         return status()
-    print("Unbekannter Befehl: %s (nutze serve | backup-all | status)" % cmd)
+    print("Unbekannter Befehl: %s (nutze serve | backup-all | auto-export | status)" % cmd)
     return 2
 
 

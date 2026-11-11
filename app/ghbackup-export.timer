@@ -1,0 +1,10 @@
+[Unit]
+Description=Monatlicher Komplett-Export aller GitHub-Mirrors
+
+[Timer]
+# Am 1. jedes Monats um 04:30 (nach dem 03:00-Backup)
+OnCalendar=*-*-01 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
