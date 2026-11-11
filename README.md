@@ -140,6 +140,18 @@ git push --mirror https://github.com/<neues-konto>/<repo>.git
 
 Sind (Preset ③) als **JSON-Dateien** im Export enthalten (`repos/<owner>/<repo>-issues.json`, `...-releases.json`). Re-Import z. B. mit Tools wie [github-issue-importer](https://github.com/gavinr/github-issue-importer) oder manuell über die GitHub-API — die Backups selbst sind ohne Internet **lesbar** (einfaches JSON).
 
+## 🔒 Sicherheit — nur im abgeschirmten Netzwerk betreiben!
+
+Die App ist **by design für das eigene, geschützte Heimnetz** gebaut:
+
+- **Niemals ins Internet exposen:** Die Web-UI hat **keine Authentifizierung** und die API keine Zugriffsabsicherung. **Port 4242 niemals port-forwarden oder freigeben!**
+- **LAN-only:** Wer im Netzwerk ist, sieht und steuert alles (Scans starten, Backup-Übersicht, **Export-Downloads**). Den Container daher nur in einem Netz mit vertrauenswürdigen Geräten betreiben — **nicht** im Gastnetz oder IoT-Netz. Besser: eigenes VLAN mit Zugriff nur von deinem Rechner.
+- **Fernzugriff von unterwegs:** ausschließlich über **VPN ins Heimnetz** (z. B. WireGuard) oder einen Reverse-Proxy **mit Authentifizierung + TLS** (Caddy `basic_auth`, nginx) — nie die Ports direkt öffnen.
+- **PAT:** liegt nur lokal im Container in `config.json` (Rechte 0600, nur root lesbar), wird nie geloggt und in der UI nur maskiert angezeigt.
+- **Export-Datei:** enthält den kompletten Code **unverschlüsselt**. Wenn sie das Haus verlässt (Cloud-Sync, geteilter USB-Stick, externer Dienst), vorher selbst verschlüsseln: `gpg -c github-backup-<datum>.tar.gz`
+- **Root-Zugang:** das generierte CT-Passwort nach der Installation ändern: `pct enter <ctid> -- passwd`
+- Geplant (Roadmap): optionales **UI-Passcode** und **Export-Verschlüsselung** — in einem geschützten Heimnetz nice-to-have, kein Muss.
+
 ## 🧰 Fehlersuche
 
 - Installer bricht ab → er gibt die **komplette Fehlerkette** aus (Zeile, Befehl, Exit-Code, Container-Logs) und speichert alles in `/tmp/github-backup-installer-*.log`
