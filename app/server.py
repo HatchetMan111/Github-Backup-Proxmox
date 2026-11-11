@@ -47,7 +47,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
@@ -112,7 +112,7 @@ def load_state():
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"repos": {}, "snapshots": [], "last_run": None}
+        return {"repos": {}, "snapshots": [], "exports": [], "last_run": None}
 
 
 def save_state(state):
@@ -724,6 +724,51 @@ def backup_all_cli():
         fd.close()
     return 1 if JOB.results["fail"] else 0
 
+# ── Komplett-Export (Katastrophenschutz) ───────────────────────────────────
+EXPORT_DIR = os.path.join(BASE_DIR, "export")
+EXPORT_RE = re.compile(r"^github-backup-\d{8}-\d{6}\.tar\.gz$")
+
+
+def create_export():
+    """Packt alle Mirrors als eine .tar.gz nach export/ — die Datei, die man
+    auf NAS/USB/den eigenen PC kopiert, falls GitHub oder der Container weg ist."""
+    if JOB.running:
+        return None, "Während eines Backups kein Export möglich"
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    fname = "github-backup-%s.tar.gz" % stamp
+    target = os.path.join(EXPORT_DIR, fname)
+    try:
+        proc = subprocess.run(["tar", "czf", target, "-C", BASE_DIR, "repos"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, timeout=7200)
+    except subprocess.TimeoutExpired:
+        return None, "Export-Timeout nach 2 h (repos zu groß? Per pct pull kopieren)"
+    if proc.returncode != 0:
+        return None, "tar fehlgeschlagen: %s" % (proc.stderr or "").strip()[-300:]
+    size_kb = int(subprocess.run(["du", "-sk", target], stdout=subprocess.PIPE,
+                                 text=True).stdout.split()[0])
+    entry = {"name": fname, "file": target, "size_kb": size_kb, "created": now_iso()}
+    with STATE_LOCK:
+        STATE.setdefault("exports", []).append(entry)
+        STATE["exports"] = STATE["exports"][-50:]
+        save_state(STATE)
+    return entry, None
+
+
+def serve_export(name):
+    """Streamt eine Export-Datei (nur aus export/, nur gültige Namen)."""
+    safe = os.path.basename(name)
+    if not EXPORT_RE.match(safe):
+        return None, None
+    path = os.path.join(EXPORT_DIR, safe)
+    if not os.path.isfile(path):
+        return None, None
+    size = os.path.getsize(path)
+    fh = open(path, "rb")
+    return fh, size
+
+
 # ── Snapshots ──────────────────────────────────────────────────────────────
 def create_snapshot(full_name):
     mdir = mirror_path(full_name)
@@ -822,6 +867,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "version": APP_VERSION})
         elif self.path == "/api/state":
             self._send_json(self.api_state())
+        elif self.path.startswith("/api/export/download?"):
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query)
+            name = (query.get("name") or [""])[0]
+            fh, size = serve_export(name)
+            if fh is None:
+                self._send_json({"error": "Export nicht gefunden"}, 404)
+                return
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Content-Disposition",
+                                 "attachment; filename=%s" % os.path.basename(name))
+                self.end_headers()
+                while True:
+                    chunk = fh.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            finally:
+                fh.close()
         elif self.path.startswith("/static/"):
             self._send_file(self.path[len("/static/"):])
         else:
@@ -843,6 +910,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(self.api_snapshot(body))
         elif self.path == "/api/excluded":
             self._send_json(self.api_excluded(body))
+        elif self.path == "/api/export":
+            self._send_json(self.api_export_create())
         else:
             self._send_json({"error": "nicht gefunden"}, 404)
 
@@ -936,6 +1005,12 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return {"ok": False, "error": err}
         return {"ok": True, "snapshot": entry}
+
+    def api_export_create(self):
+        entry, err = create_export()
+        if err:
+            return {"ok": False, "error": err}
+        return {"ok": True, "export": entry}
 
     def api_excluded(self, body):
         cfg = load_config()

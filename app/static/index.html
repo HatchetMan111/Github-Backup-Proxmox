@@ -183,9 +183,25 @@
     </div>
   </section>
 
-</div>
+  <!-- ══ 6. Komplett-Export ══ -->
+  <section class="card">
+    <h2>🌐 Komplett-Export <span class="muted">(Katastrophenschutz)</span>
+      <span style="margin-left:auto"><button class="ghost small" onclick="createExport()">📦 Alle Mirrors als .tar.gz exportieren</button></span>
+    </h2>
+    <div class="hint">Eine einzige Datei mit <b>allen</b> Mirror-Repos (Branches, Tags, Historie, Wiki,
+      Issues-/Releases-JSON). Diese Datei aufs NAS/USB/den eigenen PC kopieren –
+      <b>Re-Upload später:</b> <code>git push --mirror https://github.com/&lt;neues-konto&gt;/&lt;repo&gt;.git</code>
+      (aus dem entpackten <code>repos/&lt;owner&gt;/&lt;repo&gt;.git</code>). Wenn der Container oder GitHub selbst weg ist,
+      ist diese Datei dein Backup.</div>
+    <div class="scrollbox" style="margin-top:10px">
+      <table id="exporttable"><thead><tr>
+        <th>Datei</th><th>Größe</th><th>Erstellt</th><th></th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+    <div id="exportmsg" class="msg"></div>
+  </section>
 
-<!-- ══ Hilfe-Modal ══ -->
+</div>
 <div id="helpmodal" onclick="if(event.target===this)closeHelp()">
   <div class="helpbox">
     <h2>❓ Hilfe &amp; FAQ <button class="ghost small" style="float:right" onclick="closeHelp()">✕ Schließen</button></h2>
@@ -507,6 +523,14 @@ async function loadState() {
   $("snaptable").querySelector("tbody").innerHTML = snaps.map(sn => `<tr>
       <td>${esc(sn.repo)}</td><td><code>${esc(sn.file)}</code></td>
       <td>${fmtKB(sn.size_kb)}</td><td>${fmtDate(sn.created)}</td></tr>`).join("");
+
+  // Exports
+  const exports = (s.state.exports || []).slice().reverse();
+  $("exporttable").querySelector("tbody").innerHTML = exports.map(ex => `<tr>
+      <td><code>${esc(ex.name)}</code></td>
+      <td>${fmtKB(ex.size_kb)}</td>
+      <td>${fmtDate(ex.created)}</td>
+      <td><a class="faqlink" href="/api/export/download?name=${encodeURIComponent(ex.name)}">⬇ Download</a></td></tr>`).join("");
 }
 
 /* ── Hilfe-Modal ── */
@@ -520,6 +544,14 @@ function openHelp(anchor) {
 }
 function closeHelp() { $("helpmodal").style.display = "none"; }
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeHelp(); });
+
+/* ── Komplett-Export ── */
+async function createExport() {
+  show($("exportmsg"), true, "Export läuft (kann bei großen Mirrors einige Minuten dauern) …");
+  const r = await api("/api/export", {});
+  show($("exportmsg"), r.ok, r.ok ? "Export fertig: " + r.export.name + " (" + fmtKB(r.export.size_kb) + ")" : r.error);
+  loadState();
+}
 
 /* ── Helfer ── */
 async function api(url, body) {

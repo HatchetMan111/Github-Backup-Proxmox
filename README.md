@@ -115,6 +115,31 @@ Beim Scan die **🚫-Spalte** anhaken → dauerhafte Ausschlussliste, gilt auch 
 
 `ghbackup.timer` sichert täglich um die in der UI eingestellte Stunde alle Konten (außer Ausschlussliste). `Persistent=true` holt verpasste Läufe nach Reboot nach. Timer-Status: `pct exec <CT-ID> -- systemctl list-timers ghbackup*`
 
+## 🌐 Komplett-Export & Re-Upload (Katastrophenfall: „wenn alle Stricke reißen")
+
+Die Mirrors sind **selbst schon das Restore-Format** (alle Branches, Tags, Historie, Wiki). Für den Fall, dass **GitHub weg ist, das Konto gesperrt wird oder der Container stirbt**:
+
+### 1. Export-Datei erstellen und außer Haus bringen
+
+In der Web-UI: **🌐 Komplett-Export → „Alle Mirrors als .tar.gz exportieren"** → erzeugt eine einzelne Datei in `export/` → per **⬇ Download**-Link aufs NAS/USB/den eigenen PC kopieren. (Alternativ auf dem Host: `pct pull <ctid> /opt/github-backup/export/github-backup-<datum>.tar.gz ./`)
+
+### 2. Später wieder hochladen (Re-Upload auf GitHub)
+
+```bash
+# Export entpacken → repos/<owner>/<repo>.git liegt vor (bare Mirror)
+tar xzf github-backup-<datum>.tar.gz
+
+# Neues (leeres) Repo auf GitHub anlegen, dann EIN Befehl stellt alles wieder her:
+cd repos/<owner>/<repo>.git
+git push --mirror https://github.com/<neues-konto>/<repo>.git
+```
+
+`git push --mirror` überträgt **alle Branches, Tags und die komplette Historie**. Ein Mirror ist ein normales Git-Repo — er funktioniert auf jedem Rechner, auch ohne diesen Container.
+
+### 3. Issues & Releases
+
+Sind (Preset ③) als **JSON-Dateien** im Export enthalten (`repos/<owner>/<repo>-issues.json`, `...-releases.json`). Re-Import z. B. mit Tools wie [github-issue-importer](https://github.com/gavinr/github-issue-importer) oder manuell über die GitHub-API — die Backups selbst sind ohne Internet **lesbar** (einfaches JSON).
+
 ## 🧰 Fehlersuche
 
 - Installer bricht ab → er gibt die **komplette Fehlerkette** aus (Zeile, Befehl, Exit-Code, Container-Logs) und speichert alles in `/tmp/github-backup-installer-*.log`
