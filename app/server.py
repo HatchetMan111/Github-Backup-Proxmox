@@ -47,7 +47,7 @@ ASKPASS_PATH = os.path.join(BASE_DIR, "askpass.sh")
 TIMER_UNIT_PATH = "/etc/systemd/system/ghbackup.timer"
 
 PORT = int(os.environ.get("GITHUB_BACKUP_PORT", "4242"))
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com")  # Override für Tests/Enterprise
 
 PRESETS = ("code", "wiki", "full")   # ① nur Code ② Code+Wiki ③ Komplett
@@ -912,6 +912,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(self.api_excluded(body))
         elif self.path == "/api/export":
             self._send_json(self.api_export_create())
+        elif self.path == "/api/doctor":
+            self._send_json(self.api_doctor())
         else:
             self._send_json({"error": "nicht gefunden"}, 404)
 
@@ -923,12 +925,32 @@ class Handler(BaseHTTPRequestHandler):
                               for a in cfg.get("accounts", [])]
         with STATE_LOCK:
             state_copy = json.loads(json.dumps(STATE))  # tiefe Kopie für sichere Serialisierung
+        # Übersichts-Statistiken (Dashboard)
+        disk = shutil.disk_usage(BASE_DIR)
+        repos = state_copy.get("repos", {})
+        accounts = {}
+        for full_name, meta in repos.items():
+            owner = full_name.partition("/")[0]
+            entry = accounts.setdefault(owner, {"repos": 0, "size_kb": 0})
+            entry["repos"] += 1
+            entry["size_kb"] += meta.get("size_kb", 0)
+        stats = {
+            "repos_total": len(repos),
+            "size_total_kb": sum(m.get("size_kb", 0) for m in repos.values()),
+            "disk": {"used_pct": round(disk.used / disk.total * 100),
+                     "total_gb": round(disk.total / 2**30, 1),
+                     "free_gb": round(disk.free / 2**30, 1)},
+            "accounts": sorted(accounts.items(), key=lambda x: -x[1]["size_kb"]),
+            "timer_hour": cfg.get("timer_hour"),
+            "last_run": state_copy.get("last_run"),
+        }
         return {
             "version": APP_VERSION,
             "config": masked,
             "job": JOB.snapshot(),
             "log": JOB.tail(60),
             "state": state_copy,
+            "stats": stats,
             "data_dir": BASE_DIR,
             "timer_unit_managed": os.access(TIMER_UNIT_PATH, os.W_OK) if os.path.exists(TIMER_UNIT_PATH) else False,
         }
@@ -1005,6 +1027,86 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return {"ok": False, "error": err}
         return {"ok": True, "snapshot": entry}
+
+    def api_export_create(self):
+        entry, err = create_export()
+        if err:
+            return {"ok": False, "error": err}
+        return {"ok": True, "export": entry}
+
+    def api_doctor(self):
+        """Selbsttest: Token, DNS, Disk, Timer, letzter Lauf — alles auf einen Blick."""
+        checks = []
+        # 1) Service (antwortet — wir SIND der Service)
+        checks.append({"name": "Web-UI / Service", "ok": True,
+                       "detail": "läuft (v%s, Port %d)" % (APP_VERSION, PORT)})
+        # 2) Disk — Warnung ab 80 %
+        disk = shutil.disk_usage(BASE_DIR)
+        used_pct = round(disk.used / disk.total * 100)
+        disk_ok = used_pct < 80
+        checks.append({
+            "name": "Disk-Speicher (%s)" % BASE_DIR,
+            "ok": disk_ok,
+            "detail": "%d%% belegt – %.1f GB frei von %.0f GB%s"
+                      % (used_pct, disk.free / 2**30, disk.total / 2**30,
+                         "  ⚠ WIRD ENG – rootfs vergrößern (--rootfs)!" if not disk_ok else ""),
+        })
+        # 3) DNS: direkter öffentlicher Resolver + GitHub-IP
+        ip = _public_dns_resolve("api.github.com")
+        checks.append({"name": "DNS (1.1.1.1/8.8.8.8/9.9.9.9)", "ok": bool(ip),
+                       "detail": "api.github.com → %s" % ip if ip
+                       else "keine Antwort von den öffentlichen Resolvern"})
+        # 4) GitHub-API erreichbar (anonymer Selbstcheck)
+        st, data, _ = gh_request("/users/octocat")
+        checks.append({"name": "GitHub-API erreichbar", "ok": st == 200,
+                       "detail": "HTTP %s%s" % (st,
+                       " – Rate-Limit: PAT eintragen (60/h anonym)" if st == 403 else "")})
+        # 5) PAT je Konto
+        cfg = load_config()
+        for acc in cfg.get("accounts", []):
+            token = (acc.get("token") or "").strip()
+            name = acc.get("name") or "?"
+            if not token:
+                checks.append({"name": "PAT: %s" % name, "ok": None,
+                               "detail": "kein PAT hinterlegt – nur öffentliche Repos (60 Anfragen/h)"})
+                continue
+            st, data, _ = gh_request("/user", token)
+            if st == 200 and isinstance(data, dict):
+                checks.append({"name": "PAT: %s" % name, "ok": True,
+                               "detail": "gültig – angemeldet als „%s“" % data.get("login", "?")})
+            elif st == 401:
+                checks.append({"name": "PAT: %s" % name, "ok": False,
+                               "detail": "UNGÜLTIG / ABGELAUFEN (HTTP 401) – neuen Token erstellen (❓-FAQ Schritt für Schritt)"})
+            elif st == 403:
+                checks.append({"name": "PAT: %s" % name, "ok": False,
+                               "detail": "abgelehnt (HTTP 403) – Rate-Limit oder Scope fehlt"})
+            else:
+                checks.append({"name": "PAT: %s" % name, "ok": False,
+                               "detail": "HTTP %s: %s" % (st, str(data)[:80])})
+        # 6) Timer (nur als root prüfbar — im CT der Normalfall)
+        if os.geteuid() == 0:
+            proc = subprocess.run(["systemctl", "is-active", "ghbackup.timer"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            active = proc.stdout.strip() == "active"
+            checks.append({"name": "Täglicher Timer", "ok": active,
+                           "detail": "ghbackup.timer %s (täglich %02d:00)"
+                                     % ("aktiv ✓" if active else "INAKTIV – tägliches Backup aus!",
+                                        load_config().get("timer_hour", 3))})
+        else:
+            checks.append({"name": "Täglicher Timer", "ok": None,
+                           "detail": "nur als root prüfbar (lokale Testinstanz)"})
+        # 7) Letzter Lauf
+        last = STATE.get("last_run")
+        repos = STATE.get("repos", {})
+        checks.append({"name": "Letzter Backup-Lauf", "ok": bool(last),
+                       "detail": (last or "noch nie – einmal „Repos scannen“ + „Sichern“ drücken")})
+        # 8) Backup-Bestand
+        checks.append({"name": "Backup-Bestand", "ok": len(repos) > 0,
+                       "detail": "%d gesicherte Repos" % len(repos) if repos
+                       else "leer – noch nichts gesichert"})
+        n_bad = sum(1 for c in checks if c["ok"] is False)
+        return {"ok": True, "checks": checks, "problems": n_bad,
+                "disk": {"used_pct": used_pct}}
 
     def api_export_create(self):
         entry, err = create_export()

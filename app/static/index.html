@@ -61,6 +61,18 @@
           padding: 8px 12px; font-size: 12px; color: var(--muted); margin-top: 12px; }
   .scrollbox { max-height: 420px; overflow: auto; }
   code { background: var(--panel2); padding: 1px 6px; border-radius: 5px; font-size: 12px; }
+  /* Dashboard */
+  .kpis { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0; }
+  .kpi { flex: 1 1 150px; background: var(--panel2); border: 1px solid var(--border);
+         border-radius: 8px; padding: 10px 12px; text-align: center; }
+  .kpi b { font-size: 20px; display: block; }
+  .kpi span { font-size: 11px; color: var(--muted); }
+  .progress.warn > div { background: var(--warn); }
+  .progress.crit > div { background: var(--err); }
+  .dline { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; font-size: 13px;
+           border-bottom: 1px solid var(--border); }
+  .dline:last-child { border-bottom: 0; }
+  .dok { color: var(--accent); } .derr { color: var(--err); } .dnone { color: var(--muted); }
   /* Hilfe-Modal */
   #helpmodal { position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 50;
                display: none; align-items: flex-start; justify-content: center;
@@ -92,6 +104,31 @@
     <button class="ghost small" onclick="openHelp()">❓ Hilfe</button>
     <span class="sub" style="margin-left:auto">Daten: <span id="datadir"></span></span>
   </header>
+
+  <!-- ══ 0. Übersicht ══ -->
+  <section class="card">
+    <h2>📊 Übersicht der gesicherten Projekte</h2>
+    <div class="kpis">
+      <div class="kpi"><b id="ov_repos">0</b><span>gesicherte Repos</span></div>
+      <div class="kpi"><b id="ov_size">0</b><span>Gesamtgröße</span></div>
+      <div class="kpi"><b id="ov_last">–</b><span>Letzter Backup-Lauf</span></div>
+      <div class="kpi"><b id="ov_timer">–</b><span>Tägliches Backup um</span></div>
+    </div>
+    <div style="margin-top:14px">
+      <label>💾 Disk-Speicher (rootfs) — Warnung ab 80 %</label>
+      <div class="progress" id="ov_diskwrap"><div id="ov_diskbar"></div></div>
+      <div class="muted" id="ov_disktext" style="margin-top:4px"></div>
+    </div>
+    <div id="ov_accounts" style="margin-top:14px"></div>
+  </section>
+
+  <!-- ══ 0b. Gesundheit ══ -->
+  <section class="card">
+    <h2>🩺 Gesundheit (Selbsttest)
+      <span style="margin-left:auto"><button class="ghost small" onclick="runDoctor()">🩺 Jetzt prüfen</button></span>
+    </h2>
+    <div id="doctorlist" class="muted">Noch nicht geprüft — „Jetzt prüfen“ drücken.</div>
+  </section>
 
   <!-- ══ 1. Konfiguration ══ -->
   <section class="card">
@@ -484,6 +521,8 @@ async function loadState() {
 
   $("ver").textContent = "v" + s.version;
   $("datadir").textContent = s.data_dir;
+  if (s.stats) renderOverview(s.stats);
+  if (!doctorRanOnce && s.version) { doctorRanOnce = true; runDoctor(); }
   applyStateToConfig(s.config);
 
   const j = s.job;
@@ -551,6 +590,39 @@ async function createExport() {
   const r = await api("/api/export", {});
   show($("exportmsg"), r.ok, r.ok ? "Export fertig: " + r.export.name + " (" + fmtKB(r.export.size_kb) + ")" : r.error);
   loadState();
+}
+
+/* ── Übersicht ── */
+function renderOverview(st) {
+  $("ov_repos").textContent = st.repos_total;
+  $("ov_size").textContent = fmtKB(st.size_total_kb);
+  $("ov_last").textContent = st.last_run ? fmtDate(st.last_run) : "–";
+  $("ov_timer").textContent = "⏰ " + String(st.timer_hour).padStart(2, "0") + ":00";
+  const pct = st.disk.used_pct;
+  const bar = $("ov_diskbar");
+  bar.style.width = Math.max(pct, 2) + "%";
+  $("ov_diskwrap").className = "progress" + (pct >= 90 ? " crit" : pct >= 80 ? " warn" : "");
+  $("ov_disktext").textContent = pct + "% belegt — " + st.disk.free_gb + " GB frei von "
+    + st.disk.total_gb + " GB" + (pct >= 80 ? "  ⚠ WIRD ENG – rootfs vergrößern (--rootfs)!" : "");
+  $("ov_accounts").innerHTML = (st.accounts || []).map(([owner, d]) =>
+    `<div class="dline"><span style="flex:1">👤 <b>${esc(owner)}</b></span>
+     <span class="muted">${d.repos} Repos · ${fmtKB(d.size_kb)}</span></div>`).join("")
+    || '<div class="muted">Noch keine Backups — unten scannen und „Sichern“ drücken.</div>';
+}
+
+/* ── Doctor ── */
+let doctorRanOnce = false;
+async function runDoctor() {
+  $("doctorlist").innerHTML = '<span class="muted">Prüfe Token, DNS, Disk, Timer …</span>';
+  const r = await api("/api/doctor", {});
+  if (!r.ok || !r.checks) { $("doctorlist").textContent = r.error || "Fehler beim Selbsttest"; return; }
+  const icon = c => c === true ? '<span class="dok">✔</span>'
+              : c === false ? '<span class="derr">✘</span>' : '<span class="dnone">·</span>';
+  $("doctorlist").innerHTML = r.checks.map(c =>
+    `<div class="dline">${icon(c.ok)} <b style="min-width:220px">${esc(c.name)}</b>
+     <span class="muted" style="flex:1">${esc(c.detail)}</span></div>`).join("")
+    + (r.problems ? `<div class="msg err" style="margin-top:8px">🚨 ${r.problems} Problem(e) gefunden — Details oben ⬆</div>`
+                  : `<div class="msg ok" style="margin-top:8px">✅ Alles gesund</div>`);
 }
 
 /* ── Helfer ── */
